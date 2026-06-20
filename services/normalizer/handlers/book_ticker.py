@@ -46,9 +46,9 @@ def handle_book_ticker(event: RawEvent) -> HandlerResult:
         HotStateWrite(
             key=RedisKeys.market_book_ticker(mtype, symbol),
             value=json.dumps({
-                "bid": bid_price,
+                "bid_price": bid_price,
                 "bid_qty": bid_qty,
-                "ask": ask_price,
+                "ask_price": ask_price,
                 "ask_qty": ask_qty,
                 "update_id": update_id,
                 "ts": event.received_ms,
