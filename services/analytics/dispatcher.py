@@ -92,6 +92,19 @@ class AnalyticsDispatcher:
             state.last_book = current_book
         if state.last_book and state.integrity.is_valid:
             self._refresh_walls(state, ts)
+        # Derive mid-price from top book levels when no trade price is available.
+        # Overrides on every snapshot so the price stays current with the book.
+        book = state.last_book or current_book or {}
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        try:
+            if bids and asks:
+                bid = float(bids[0][0] if isinstance(bids[0], (list, tuple)) else bids[0])
+                ask = float(asks[0][0] if isinstance(asks[0], (list, tuple)) else asks[0])
+                if bid > 0 and ask > 0:
+                    state.last_price = (bid + ask) / 2.0
+        except (ValueError, TypeError, IndexError):
+            pass
 
     def _on_orderbook_delta(
         self,
