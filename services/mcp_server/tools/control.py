@@ -5,7 +5,7 @@ from services.mcp_server.facades import execution as exec_facade
 from services.mcp_server.facades import strategy as strat_facade
 
 
-async def request_paper_trade(args: dict, *, redis, session_factory) -> dict:
+async def request_paper_trade(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     strategy_id = args.get("strategy_id", "")
     symbol = args.get("symbol", "")
     side = args.get("side", "")
@@ -29,7 +29,7 @@ async def request_paper_trade(args: dict, *, redis, session_factory) -> dict:
     )
 
 
-async def update_strategy_state(args: dict, *, redis, session_factory) -> dict:
+async def update_strategy_state(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     strategy_id = args.get("strategy_id", "")
     target_state = args.get("target_state", "")
     justification = args.get("justification", "")

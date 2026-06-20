@@ -6,7 +6,7 @@ from services.mcp_server.facades import market as market_facade
 from services.mcp_server.facades import strategy as strat_facade
 
 
-async def get_symbol_snapshot(args: dict, *, redis, session_factory) -> dict:
+async def get_symbol_snapshot(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     symbol = args.get("symbol", "")
     market_type = args.get("market_type", "futures")
     if not symbol:
@@ -14,7 +14,7 @@ async def get_symbol_snapshot(args: dict, *, redis, session_factory) -> dict:
     return await market_facade.get_symbol_snapshot(redis, market_type, symbol)
 
 
-async def list_strategies(args: dict, *, redis, session_factory) -> dict:
+async def list_strategies(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     symbol_filter = args.get("symbol")
     state_filter = args.get("state")
     limit = int(args.get("limit", 50))
@@ -27,7 +27,7 @@ async def list_strategies(args: dict, *, redis, session_factory) -> dict:
     return {"strategies": rows, "count": len(rows)}
 
 
-async def get_strategy_details(args: dict, *, redis, session_factory) -> dict:
+async def get_strategy_details(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     strategy_id = args.get("strategy_id", "")
     if not strategy_id:
         return {"error": "missing_argument", "message": "'strategy_id' is required"}
@@ -37,7 +37,7 @@ async def get_strategy_details(args: dict, *, redis, session_factory) -> dict:
     return detail
 
 
-async def get_recent_executions(args: dict, *, redis, session_factory) -> dict:
+async def get_recent_executions(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     strategy_id = args.get("strategy_id")
     symbol = args.get("symbol")
     limit = int(args.get("limit", 20))
@@ -50,7 +50,7 @@ async def get_recent_executions(args: dict, *, redis, session_factory) -> dict:
     return {"executions": rows, "count": len(rows)}
 
 
-async def get_incidents(args: dict, *, redis, session_factory) -> dict:
+async def get_incidents(args: dict, *, redis, session_factory, user_identity=None) -> dict:
     symbol = args.get("symbol")
     since_ts = args.get("since_ts")
     since_ms = int(since_ts) if since_ts else None

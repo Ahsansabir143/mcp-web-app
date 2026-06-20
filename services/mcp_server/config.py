@@ -12,5 +12,9 @@ class McpServerSettings(BaseServiceSettings):
     max_result_rows: int = 100
     port: int = 8006
 
+    # OAuth 2.0 PKCE settings
+    auth_code_ttl_s: int = 120
+    access_token_ttl_s: int = 3600
+
 
 settings = McpServerSettings()

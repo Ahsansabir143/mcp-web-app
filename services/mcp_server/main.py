@@ -4,6 +4,16 @@ Claude connects via:
   GET  /sse                      → open SSE session, receive endpoint URL
   POST /messages?session_id=...  → send JSON-RPC requests; responses arrive via SSE
 
+OAuth 2.0 PKCE endpoints (for Claude custom remote connector):
+  GET  /.well-known/oauth-authorization-server  → RFC 8414 discovery metadata
+  GET  /oauth/authorize                         → PKCE authorize, returns auth code
+  POST /oauth/token                             → exchange code+verifier for bearer token
+
+Auth:
+  GET /sse and POST /messages both require either:
+    Authorization: Bearer <token>   (issued by /oauth/token)
+    X-API-Key: <key>                (legacy — backwards-compatible)
+
 Tool call responses follow the MCP 2024-11-05 content format:
   {"content": [{"type": "text", "text": "<json>"}], "isError": false}
 """
@@ -20,10 +30,13 @@ from shared.db.session import async_session_factory
 from shared.redis.client import get_redis_client
 from shared.utils.logging import get_logger, setup_logging
 from services.mcp_server import protocol as proto
-from services.mcp_server.auth import verify_mcp_api_key
+from services.mcp_server.auth import verify_mcp_auth
 from services.mcp_server.config import settings
 from services.mcp_server.health import router as health_router
-from services.mcp_server.session import registry
+from services.mcp_server.identity import McpIdentity
+from services.mcp_server.oauth.discovery import router as discovery_router
+from services.mcp_server.oauth.handlers import router as oauth_router
+from services.mcp_server.session import RedisSessionRegistry
 from services.mcp_server.tools import control as control_tools
 from services.mcp_server.tools import read as read_tools
 from services.mcp_server.tools import simulation as sim_tools
@@ -53,6 +66,10 @@ _HANDLERS = {
 async def lifespan(app: FastAPI):
     app.state.redis = get_redis_client()
     app.state.session_factory = async_session_factory
+    app.state.session_registry = RedisSessionRegistry(
+        redis=app.state.redis,
+        timeout_s=settings.session_timeout_s,
+    )
     log.info("mcp-server started")
     yield
     log.info("mcp-server stopped")
@@ -60,25 +77,38 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="trading-platform-mcp", version="0.1.0", lifespan=lifespan)
 app.include_router(health_router)
+app.include_router(discovery_router)
+app.include_router(oauth_router)
 
 
 # ── SSE endpoint ──────────────────────────────────────────────────────────────
 
 
 @app.get("/sse")
-async def sse_endpoint(request: Request):
+async def sse_endpoint(
+    request: Request,
+    identity: McpIdentity = Depends(verify_mcp_auth),
+):
     """Open an MCP SSE session.
 
-    Sends an ``endpoint`` event with the URL clients should POST to, then
-    streams ``message`` events for every JSON-RPC response.
+    Requires auth (Bearer or X-API-Key).  Sends an ``endpoint`` event with the
+    URL clients should POST to, then streams ``message`` events for every
+    JSON-RPC response.  Session metadata (user_id, TTL) is stored in Redis.
     """
-    session_id, queue = registry.create()
-    log.info("sse session opened", session_id=session_id)
+    session_registry: RedisSessionRegistry = request.app.state.session_registry
+    session_id, queue = await session_registry.create(
+        user_id=identity.user_id,
+        client_id=identity.client_id,
+    )
+    log.info(
+        "sse session opened",
+        session_id=session_id,
+        user_id=identity.user_id,
+        auth_method=identity.auth_method,
+    )
 
     async def event_stream():
-        # Bootstrap: tell the client which URL to POST to
         yield f"event: endpoint\ndata: /messages?session_id={session_id}\n\n"
-
         try:
             while True:
                 disconnected = await request.is_disconnected()
@@ -88,9 +118,11 @@ async def sse_endpoint(request: Request):
                     message = await asyncio.wait_for(queue.get(), timeout=15.0)
                     yield f"event: message\ndata: {message}\n\n"
                 except asyncio.TimeoutError:
+                    # Refresh Redis TTL so active sessions don't expire mid-flight
+                    await session_registry.refresh_ttl(session_id)
                     yield ": keepalive\n\n"
         finally:
-            registry.remove(session_id)
+            await session_registry.remove(session_id)
             log.info("sse session closed", session_id=session_id)
 
     return StreamingResponse(
@@ -111,10 +143,11 @@ async def sse_endpoint(request: Request):
 async def handle_message(
     request: Request,
     session_id: str,
-    _: None = Depends(verify_mcp_api_key),
+    identity: McpIdentity = Depends(verify_mcp_auth),
 ):
     """Receive a JSON-RPC request and enqueue the response for the SSE stream."""
-    queue = registry.get(session_id)
+    session_registry: RedisSessionRegistry = request.app.state.session_registry
+    queue = await session_registry.get(session_id)
     if queue is None:
         raise HTTPException(404, detail=f"Session '{session_id}' not found or expired")
 
@@ -127,12 +160,18 @@ async def handle_message(
     id_ = body.get("id")
     params = body.get("params") or {}
 
-    response_json = await _dispatch(method, id_, params, request)
+    response_json = await _dispatch(method, id_, params, request, identity)
     await queue.put(response_json)
     return Response(status_code=202)
 
 
-async def _dispatch(method: str, id_, params: dict, request: Request) -> str:
+async def _dispatch(
+    method: str,
+    id_,
+    params: dict,
+    request: Request,
+    identity: McpIdentity | None = None,
+) -> str:
     redis = request.app.state.redis
     session_factory = request.app.state.session_factory
 
@@ -142,7 +181,6 @@ async def _dispatch(method: str, id_, params: dict, request: Request) -> str:
         )
 
     if method == "notifications/initialized":
-        # Client acknowledgement — no response needed (but we must return something)
         return proto.ok(id_, {})
 
     if method == "tools/list":
@@ -166,6 +204,7 @@ async def _dispatch(method: str, id_, params: dict, request: Request) -> str:
                 arguments,
                 redis=redis,
                 session_factory=session_factory,
+                user_identity=identity,
             )
             return proto.ok(id_, proto.tool_content(result))
         except Exception as exc:

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
-
-from services.mcp_server.session import registry
+from fastapi import APIRouter, Request
 
 router = APIRouter()
 
@@ -13,9 +11,11 @@ async def health():
 
 
 @router.get("/health/detail")
-async def health_detail():
+async def health_detail(request: Request):
+    session_registry = getattr(request.app.state, "session_registry", None)
+    active = len(session_registry) if session_registry is not None else 0
     return {
         "status": "ok",
         "service": "mcp-server",
-        "active_sessions": len(registry),
+        "active_sessions": active,
     }

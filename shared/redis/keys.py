@@ -175,6 +175,16 @@ class RedisKeys:
     def mcp_session(session_id: str) -> str:
         return f"mcp:session:{session_id}"
 
+    # ── MCP OAuth ─────────────────────────────────────────────
+
+    @staticmethod
+    def mcp_oauth_code(code: str) -> str:
+        return f"mcp:oauth:code:{code}"
+
+    @staticmethod
+    def mcp_oauth_token(token: str) -> str:
+        return f"mcp:oauth:token:{token}"
+
     # ── Global ops controls ──────────────────────────────────
 
     @staticmethod

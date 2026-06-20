@@ -146,8 +146,8 @@ class TestBookTickerHandler:
     def test_hot_state_payload_structure(self) -> None:
         w = handle_book_ticker(self._event()).hot_writes[0]
         v = json.loads(w.value)
-        assert v["bid"] == "65430.00"
-        assert v["ask"] == "65431.00"
+        assert v["bid_price"] == "65430.00"
+        assert v["ask_price"] == "65431.00"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@ from services.mcp_server.facades import strategy as strat_facade
 
 
 async def simulate_strategy_on_snapshot(
-    args: dict, *, redis, session_factory
+    args: dict, *, redis, session_factory, user_identity=None
 ) -> dict:
     strategy_id = args.get("strategy_id", "")
     symbol = args.get("symbol", "")
@@ -22,7 +22,7 @@ async def simulate_strategy_on_snapshot(
 
 
 async def simulate_strategy_on_range(
-    args: dict, *, redis, session_factory
+    args: dict, *, redis, session_factory, user_identity=None
 ) -> dict:
     """Stub: range simulation requires historical snapshot replay (deferred)."""
     return {
