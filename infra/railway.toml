@@ -1,0 +1,58 @@
+[build]
+builder = "DOCKERFILE"
+
+[[services]]
+name = "gateway-api"
+dockerfile = "services/gateway_api/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8000"
+
+[[services]]
+name = "binance-ingest"
+dockerfile = "services/binance_ingest/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8001"
+
+[[services]]
+name = "normalizer"
+dockerfile = "services/normalizer/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8002"
+
+[[services]]
+name = "analytics"
+dockerfile = "services/analytics/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8003"
+
+[[services]]
+name = "strategy-service"
+dockerfile = "services/strategy_service/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8004"
+
+[[services]]
+name = "execution"
+dockerfile = "services/execution/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8005"
+
+[[services]]
+name = "mcp-server"
+dockerfile = "services/mcp_server/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8006"

@@ -1,0 +1,108 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: trading_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  binance-ingest:
+    build:
+      context: ..
+      dockerfile: services/binance_ingest/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+    ports:
+      - "8001:8001"
+
+  normalizer:
+    build:
+      context: ..
+      dockerfile: services/normalizer/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports:
+      - "8002:8002"
+
+  analytics:
+    build:
+      context: ..
+      dockerfile: services/analytics/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports:
+      - "8003:8003"
+
+  strategy-service:
+    build:
+      context: ..
+      dockerfile: services/strategy_service/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports:
+      - "8004:8004"
+
+  execution:
+    build:
+      context: ..
+      dockerfile: services/execution/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports:
+      - "8005:8005"
+
+  mcp-server:
+    build:
+      context: ..
+      dockerfile: services/mcp_server/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports:
+      - "8006:8006"
+
+  gateway-api:
+    build:
+      context: ..
+      dockerfile: services/gateway_api/Dockerfile
+    env_file: ../.env
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports:
+      - "8000:8000"
+
+volumes:
+  pg_data:
