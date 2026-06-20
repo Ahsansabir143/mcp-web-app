@@ -57,7 +57,9 @@ class ExecutionRiskEngine(RiskEngineBase):
         request: ExecutionRequest,
         daily_loss_usd: Decimal | None = None,
         open_positions: int | None = None,
+        limits_override: RiskLimits | None = None,
     ) -> RiskDecision:
+        limits = limits_override if limits_override is not None else self._limits
         checks: dict[str, bool] = {}
         failures: list[str] = []
         metadata: dict = {}
@@ -115,11 +117,11 @@ class ExecutionRiskEngine(RiskEngineBase):
             check_symbol_policy(request, self._allowed_symbols, self._denied_symbols),
             check_trading_mode(request, self._paper_only),
             check_missing_account_context(request, self._has_credentials),
-            check_max_position_size(request, self._limits.max_position_size_usd),
+            check_max_position_size(request, limits.max_position_size_usd),
             check_unsupported_order_type(request),
-            check_max_daily_loss_placeholder(daily_loss_usd, self._limits.max_daily_loss_usd),
+            check_max_daily_loss_placeholder(daily_loss_usd, limits.max_daily_loss_usd),
             check_max_concurrent_exposure_placeholder(
-                open_positions, self._limits.max_concurrent_positions
+                open_positions, limits.max_concurrent_positions
             ),
         ]
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import time
+from decimal import Decimal, InvalidOperation
 
 from shared.redis.client import RedisClient
 from shared.redis.keys import RedisKeys
@@ -17,6 +19,10 @@ async def get_symbol_snapshot(
     Reads the full ``analytics:{market_type}:{symbol}:snapshot`` key written by
     the analytics service. Falls back to assembling from individual hot-state
     keys if the snapshot key is absent.
+
+    The assembled fallback always surfaces top-level ``last_price``, ``bid``,
+    ``ask``, ``spread``, ``price_age_ms``, and ``bid_ask_age_ms`` fields so
+    callers get a consistent shape regardless of which path was taken.
     """
     raw = await redis.get(RedisKeys.analytics_snapshot(market_type, symbol))
     if raw:
@@ -24,10 +30,11 @@ async def get_symbol_snapshot(
         data["symbol"] = symbol
         data["market_type"] = market_type
         data["source"] = "analytics_snapshot"
+        _inject_price_fields(data)
         return data
 
-    # Assemble from individual keys so the tool is useful even when the full
-    # snapshot hasn't been written yet.
+    # ── Assembled fallback ────────────────────────────────────────────────────
+    now_ms = int(time.time() * 1000)
     parts: dict = {
         "symbol": symbol,
         "market_type": market_type,
@@ -37,11 +44,35 @@ async def get_symbol_snapshot(
 
     price_raw = await redis.get(RedisKeys.market_price(market_type, symbol))
     if price_raw:
-        parts["available"]["price"] = json.loads(price_raw)
+        price_data = json.loads(price_raw)
+        parts["available"]["price"] = price_data
+        price_val = price_data.get("price")
+        if price_val:
+            parts["last_price"] = str(price_val)
+        price_ts = price_data.get("ts")
+        if price_ts:
+            parts["price_age_ms"] = max(0, now_ms - int(price_ts))
 
     book_raw = await redis.get(RedisKeys.market_book_ticker(market_type, symbol))
     if book_raw:
-        parts["available"]["book_ticker"] = json.loads(book_raw)
+        book = json.loads(book_raw)
+        parts["available"]["book_ticker"] = book
+        bid = book.get("bid_price")
+        ask = book.get("ask_price")
+        if bid:
+            parts["bid"] = str(bid)
+        if ask:
+            parts["ask"] = str(ask)
+        if bid and ask:
+            try:
+                parts["spread"] = str(
+                    (Decimal(str(ask)) - Decimal(str(bid))).quantize(Decimal("0.01"))
+                )
+            except (InvalidOperation, TypeError):
+                pass
+        book_ts = book.get("ts")
+        if book_ts:
+            parts["bid_ask_age_ms"] = max(0, now_ms - int(book_ts))
 
     mark_raw = await redis.get(RedisKeys.market_mark(market_type, symbol))
     if mark_raw:
@@ -78,6 +109,17 @@ async def get_symbol_snapshot(
         )
 
     return parts
+
+
+def _inject_price_fields(snapshot: dict) -> None:
+    """Promote last_price/bid/ask to top level when reading full analytics snapshot."""
+    ms = snapshot.get("market_state") or {}
+    if ms.get("price") is not None and "last_price" not in snapshot:
+        snapshot["last_price"] = str(ms["price"])
+    if ms.get("bid") is not None and "bid" not in snapshot:
+        snapshot["bid"] = str(ms["bid"])
+    if ms.get("ask") is not None and "ask" not in snapshot:
+        snapshot["ask"] = str(ms["ask"])
 
 
 async def get_current_price(

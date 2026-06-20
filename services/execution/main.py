@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from shared.db.session import async_session_factory
 from shared.utils.logging import get_logger, setup_logging
+from services.execution.account.context import AccountContextLoader
 from services.execution.config import settings
 from services.execution.consumer import ExecutionConsumer
 from services.execution.events.publisher import ExecutionEventPublisher
@@ -29,12 +30,14 @@ async def lifespan(app: FastAPI):
     risk_engine = ExecutionRiskEngine(redis)
     publisher = ExecutionEventPublisher(redis)
     incident_logger = IncidentLogger(async_session_factory)
+    context_loader = AccountContextLoader(async_session_factory)
 
     consumer = ExecutionConsumer(
         settings=settings,
         redis=redis,
         repository=repository,
         risk_engine=risk_engine,
+        context_loader=context_loader,
     )
     recon_consumer = NormalizedEventConsumer(
         settings=settings,

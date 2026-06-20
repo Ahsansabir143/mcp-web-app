@@ -4,14 +4,21 @@ import time
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select
+from datetime import datetime, timezone
+
+import sqlalchemy as sa
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shared.db.models.execution import (
     ExecutionEvent as ExecutionEventModel,
     ExecutionJob as ExecutionJobModel,
 )
-from shared.db.models.account import Order as OrderModel, Fill as FillModel
+from shared.db.models.account import (
+    Fill as FillModel,
+    Order as OrderModel,
+    Position as PositionModel,
+)
 from shared.schemas.execution import ExecutionRequest
 from services.execution.adapter.base import AdapterResponse
 
@@ -248,3 +255,63 @@ class ExecutionRepository:
                 order.status = new_status
             order.updated_at_ms = int(time.time() * 1000)
             await session.commit()
+
+    # ── Risk data queries ─────────────────────────────────────────────────────
+
+    async def get_daily_realized_loss_usd(
+        self, account_id: str, since_ms: int | None = None
+    ) -> Decimal:
+        """Return absolute USD loss from fills in [since_ms, now].
+
+        Only negative realized_pnl rows are summed; NULL rows are excluded.
+        Returns Decimal("0") when there are no loss fills or on invalid input.
+        """
+        try:
+            account_uuid = uuid.UUID(account_id)
+        except ValueError:
+            return Decimal("0")
+
+        if since_ms is None:
+            now_utc = datetime.now(timezone.utc)
+            midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+            since_ms = int(midnight.timestamp() * 1000)
+
+        async with self._factory() as session:
+            stmt = select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (FillModel.realized_pnl < 0, FillModel.realized_pnl),
+                            else_=sa.literal(0),
+                        )
+                    ),
+                    sa.literal(0),
+                )
+            ).where(
+                FillModel.account_id == account_uuid,
+                FillModel.timestamp_ms >= since_ms,
+                FillModel.realized_pnl.isnot(None),
+            )
+            result = await session.execute(stmt)
+            val = result.scalar() or 0
+            # val is ≤ 0 (sum of losses); abs() gives the magnitude
+            return abs(Decimal(str(val)))
+
+    async def get_open_positions_count(self, account_id: str) -> int:
+        """Return count of positions with quantity > 0 for the given account."""
+        try:
+            account_uuid = uuid.UUID(account_id)
+        except ValueError:
+            return 0
+
+        async with self._factory() as session:
+            stmt = (
+                select(func.count())
+                .select_from(PositionModel)
+                .where(
+                    PositionModel.account_id == account_uuid,
+                    PositionModel.quantity > 0,
+                )
+            )
+            result = await session.execute(stmt)
+            return result.scalar() or 0

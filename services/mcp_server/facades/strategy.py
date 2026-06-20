@@ -238,12 +238,12 @@ async def simulate_strategy_on_snapshot(
 
     try:
         from services.strategy_service.framework.evaluator import StrategyEvaluator
-        from services.strategy_service.framework.rule_adapter import RuleBasedStrategy
+        from services.strategy_service.framework.factory import build_strategy
         from services.strategy_service.lifecycle.transitions import LifecycleManager
     except ImportError as exc:
         return {"error": "import_error", "message": str(exc)}
 
-    strategy_obj = RuleBasedStrategy(
+    strategy_obj = build_strategy(
         strategy_id=sid,
         version=version.version,
         rules=version.rules or [],

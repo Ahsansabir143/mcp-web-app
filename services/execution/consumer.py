@@ -10,6 +10,7 @@ from shared.schemas.enums import ApprovalLevel, TradingMode
 from shared.schemas.execution import ExecutionRequest
 from shared.schemas.strategy import TradeIntent
 from shared.utils.logging import get_logger
+from services.execution.account.context import AccountContextLoader
 from services.execution.adapter.base import ExecutionAdapterBase
 from services.execution.adapter.paper import PaperExecutionAdapter
 from services.execution.config import ExecutionSettings
@@ -38,12 +39,14 @@ class ExecutionConsumer:
         repository: ExecutionRepository | None = None,
         adapter: ExecutionAdapterBase | None = None,
         risk_engine: ExecutionRiskEngine | None = None,
+        context_loader: AccountContextLoader | None = None,
     ) -> None:
         self._settings = settings or ExecutionSettings()
         self._redis = redis or get_redis_client()
         self._repository = repository
         self._adapter = adapter or PaperExecutionAdapter()
         self._risk_engine = risk_engine or ExecutionRiskEngine(self._redis)
+        self._context_loader = context_loader
         self._publisher = ExecutionEventPublisher(self._redis)
         self._cooldown = CooldownControl(self._redis)
         self._running = False
@@ -151,9 +154,34 @@ class ExecutionConsumer:
             "intent_id": str(intent.intent_id),
         })
 
+        # ── Account context + live risk data ──────────────────────────────────
+        daily_loss_usd = None
+        open_positions = None
+        limits_override = None
+
+        if self._context_loader is not None:
+            try:
+                ctx = await self._context_loader.load(account_id)
+                if ctx is not None:
+                    limits_override = ctx.limits
+            except Exception as exc:
+                log.warning("account context load failed", exc_info=exc)
+
+        if self._repository is not None:
+            try:
+                daily_loss_usd = await self._repository.get_daily_realized_loss_usd(account_id)
+                open_positions = await self._repository.get_open_positions_count(account_id)
+            except Exception as exc:
+                log.warning("risk data query failed", exc_info=exc)
+
         # ── Risk gate ─────────────────────────────────────────────────────────
         try:
-            decision = await self._risk_engine.evaluate(request)
+            decision = await self._risk_engine.evaluate(
+                request,
+                daily_loss_usd=daily_loss_usd,
+                open_positions=open_positions,
+                limits_override=limits_override,
+            )
         except Exception as exc:
             log.error("risk engine error", exc_info=exc)
             await self._on_failed(job_id, client_order_id, "risk_engine_error", str(exc))

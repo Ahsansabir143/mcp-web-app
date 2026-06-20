@@ -11,7 +11,7 @@ from shared.utils.logging import get_logger
 from services.strategy_service.config import StrategyServiceSettings
 from services.strategy_service.framework.evaluator import StrategyEvaluator
 from services.strategy_service.framework.registry import StrategyRegistry
-from services.strategy_service.framework.rule_adapter import RuleBasedStrategy
+from services.strategy_service.framework.factory import build_strategy
 from services.strategy_service.intent.publisher import IntentPublisher
 from services.strategy_service.lifecycle.transitions import LifecycleManager
 from services.strategy_service.persistence.repository import StrategyRepository
@@ -166,7 +166,7 @@ class StrategyConsumer:
             rows = await self._repository.list_active_strategies()
             self._registry.clear()
             for strategy_model, version_model in rows:
-                strategy_obj = RuleBasedStrategy(
+                strategy_obj = build_strategy(
                     strategy_id=strategy_model.id,
                     version=version_model.version,
                     rules=version_model.rules or [],
