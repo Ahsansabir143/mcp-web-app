@@ -14,4 +14,4 @@ COPY services/execution/ ./services/execution/
 ENV PYTHONPATH=/app
 EXPOSE 8005
 
-CMD ["uvicorn", "services.execution.main:app", "--host", "0.0.0.0", "--port", "8005"]
+CMD ["sh", "-c", "uvicorn services.execution.main:app --host 0.0.0.0 --port ${PORT:-8005}"]

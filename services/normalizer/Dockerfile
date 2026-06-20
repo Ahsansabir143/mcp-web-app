@@ -14,4 +14,4 @@ COPY services/normalizer/ ./services/normalizer/
 ENV PYTHONPATH=/app
 EXPOSE 8002
 
-CMD ["uvicorn", "services.normalizer.main:app", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["sh", "-c", "uvicorn services.normalizer.main:app --host 0.0.0.0 --port ${PORT:-8002}"]

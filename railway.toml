@@ -4,10 +4,10 @@ builder = "DOCKERFILE"
 [[services]]
 name = "gateway-api"
 dockerfile = "services/gateway_api/Dockerfile"
-healthcheck = "/health"
+healthcheck = "/api/health"
 
 [[services.variables]]
-PORT = "8000"
+PORT = "8007"
 
 [[services]]
 name = "binance-ingest"
@@ -56,3 +56,11 @@ healthcheck = "/health"
 
 [[services.variables]]
 PORT = "8006"
+
+# ── Migration service ─────────────────────────────────────────────────────────
+# One-shot: runs `alembic upgrade head` then exits.
+# Deploy this service first (or manually via Railway "Deploy" button) before
+# starting the application services. Set DATABASE_URL in Railway Variables.
+[[services]]
+name = "migrate"
+dockerfile = "Dockerfile.migrate"

@@ -14,4 +14,4 @@ COPY services/analytics/ ./services/analytics/
 ENV PYTHONPATH=/app
 EXPOSE 8003
 
-CMD ["uvicorn", "services.analytics.main:app", "--host", "0.0.0.0", "--port", "8003"]
+CMD ["sh", "-c", "uvicorn services.analytics.main:app --host 0.0.0.0 --port ${PORT:-8003}"]

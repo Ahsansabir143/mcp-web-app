@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY shared/ ./shared/
+RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir alembic asyncpg
+
+COPY migrations/ ./migrations/
+
+ENV PYTHONPATH=/app
+
+# One-shot: runs alembic upgrade head and exits.
+# DATABASE_URL must be provided at runtime via environment variable.
+# Railway: set DATABASE_URL in the migrate service's Variables panel.
+CMD ["alembic", "-c", "migrations/alembic.ini", "upgrade", "head"]

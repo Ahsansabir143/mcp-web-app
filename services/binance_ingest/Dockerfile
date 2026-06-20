@@ -15,4 +15,4 @@ COPY services/binance_ingest/ ./services/binance_ingest/
 ENV PYTHONPATH=/app
 EXPOSE 8001
 
-CMD ["uvicorn", "services.binance_ingest.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "uvicorn services.binance_ingest.main:app --host 0.0.0.0 --port ${PORT:-8001}"]
