@@ -194,7 +194,7 @@ def test_snapshot_builder_empty_state():
         s = SymbolState("BTCUSDT", "futures")
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert isinstance(snap, UnifiedDecisionSnapshot)
     assert snap.meta.symbol == "BTCUSDT"
     assert snap.market_state.price is None
@@ -206,7 +206,7 @@ def test_snapshot_builder_with_price():
         s.last_price = 50000.0
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert snap.market_state.price == Decimal("50000.0")
 
 
@@ -218,7 +218,7 @@ def test_snapshot_builder_book_skipped_when_invalid():
         # integrity.is_valid == False (no snapshot called)
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     # Book state should be empty (guardrail)
     assert snap.book_state.imbalance_ratio is None
 
@@ -231,7 +231,7 @@ def test_snapshot_builder_book_included_when_valid():
         s.last_book = {"bids": [["49999", "10"]], "asks": [["50001", "10"]]}
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert snap.book_state.imbalance_ratio is not None
 
 
@@ -240,7 +240,7 @@ def test_snapshot_builder_futures_state_empty_without_mark():
         s = SymbolState("BTCUSDT", "futures")
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert snap.futures_state.mark_price is None
     assert snap.futures_state.funding_pressure_score is None
 
@@ -255,7 +255,7 @@ def test_snapshot_builder_futures_state_with_mark():
         }
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert snap.futures_state.mark_price == Decimal("50100.0")
     assert snap.futures_state.funding_rate == Decimal("0.0001")
     assert snap.futures_state.funding_pressure_score is not None
@@ -267,7 +267,7 @@ def test_snapshot_meta_staleness():
         s.event_timestamps["trade"] = 1_990_000   # 10s before now
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert snap.meta.staleness_ms.get("trade") == 10_000
 
 
@@ -276,6 +276,6 @@ def test_snapshot_account_empty_when_no_id():
         s = SymbolState("BTCUSDT", "futures")
         return await _build(s)
 
-    snap = asyncio.get_event_loop().run_until_complete(run())
+    snap = asyncio.run(run())
     assert snap.account_state.total_equity_usd is None
     assert snap.account_state.balances == []

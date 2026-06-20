@@ -194,3 +194,21 @@ class RedisKeys:
     @staticmethod
     def global_emergency_stop() -> str:
         return "global:emergency_stop"
+
+    # ── Live account state (cached from user-data stream) ────────
+
+    @staticmethod
+    def account_live_balances(account_id: str) -> str:
+        return f"account:{account_id}:live:balances"
+
+    @staticmethod
+    def account_live_positions(account_id: str) -> str:
+        return f"account:{account_id}:live:positions"
+
+    @staticmethod
+    def account_stream_status(account_id: str) -> str:
+        return f"account:{account_id}:stream:status"
+
+    @staticmethod
+    def account_connection_status(account_id: str) -> str:
+        return f"account:{account_id}:connection:status"

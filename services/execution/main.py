@@ -8,7 +8,9 @@ from fastapi import FastAPI
 from shared.db.session import async_session_factory
 from shared.utils.logging import get_logger, setup_logging
 from services.execution.account.context import AccountContextLoader
+from services.execution.account.credential_store import CredentialStore
 from services.execution.adapter.paper import PaperExecutionAdapter
+from services.execution.account_stream.manager import AccountStreamManager
 from services.execution.config import settings
 from services.execution.consumer import ExecutionConsumer
 from services.execution.events.publisher import ExecutionEventPublisher
@@ -32,6 +34,16 @@ async def lifespan(app: FastAPI):
     publisher = ExecutionEventPublisher(redis)
     incident_logger = IncidentLogger(async_session_factory)
     context_loader = AccountContextLoader(async_session_factory)
+    credential_store = CredentialStore(
+        async_session_factory, settings.credential_encryption_key
+    )
+    account_stream_manager = AccountStreamManager(
+        settings=settings,
+        session_factory=async_session_factory,
+        redis=redis,
+        credential_store=credential_store,
+        incident_logger=incident_logger,
+    )
 
     consumer = ExecutionConsumer(
         settings=settings,
@@ -59,17 +71,19 @@ async def lifespan(app: FastAPI):
     set_consumer(consumer)
     set_recon_components(recon_consumer, recon_loop)
 
+    await account_stream_manager.start()
     consumer_task = asyncio.create_task(consumer.start())
     recon_consumer_task = asyncio.create_task(recon_consumer.start())
     recon_loop_task = asyncio.create_task(recon_loop.start())
 
-    log.info("execution service started (3 tasks)")
+    log.info("execution service started (3 tasks + account stream)")
     try:
         yield
     finally:
         await consumer.stop()
         await recon_consumer.stop()
         await recon_loop.stop()
+        await account_stream_manager.stop()
         for task in (consumer_task, recon_consumer_task, recon_loop_task):
             task.cancel()
             try:

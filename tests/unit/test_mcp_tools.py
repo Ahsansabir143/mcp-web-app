@@ -74,7 +74,7 @@ def test_initialize_result_fields():
     assert "tools" in res["capabilities"]
 
 
-def test_tools_list_has_all_nine():
+def test_tools_list_has_all_tools():
     tl = proto.tools_list_result()
     names = {t["name"] for t in tl["tools"]}
     expected = {
@@ -87,6 +87,13 @@ def test_tools_list_has_all_nine():
         "simulate_strategy_on_range",
         "request_paper_trade",
         "update_strategy_state",
+        # Phase 2 — live account observability
+        "get_account_connection_status",
+        "get_account_balances",
+        "get_account_positions",
+        "get_open_orders",
+        "get_recent_fills",
+        "check_live_trade_policy",
     }
     assert expected == names
 

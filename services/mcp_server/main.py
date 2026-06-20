@@ -38,6 +38,7 @@ from services.mcp_server.login import router as login_router
 from services.mcp_server.oauth.discovery import router as discovery_router
 from services.mcp_server.oauth.handlers import router as oauth_router
 from services.mcp_server.session import RedisSessionRegistry
+from services.mcp_server.tools import account as account_tools
 from services.mcp_server.tools import control as control_tools
 from services.mcp_server.tools import read as read_tools
 from services.mcp_server.tools import simulation as sim_tools
@@ -57,6 +58,13 @@ _HANDLERS = {
     "simulate_strategy_on_range": sim_tools.simulate_strategy_on_range,
     "request_paper_trade": control_tools.request_paper_trade,
     "update_strategy_state": control_tools.update_strategy_state,
+    # Live account observability (read-only)
+    "get_account_connection_status": account_tools.get_account_connection_status,
+    "get_account_balances": account_tools.get_account_balances,
+    "get_account_positions": account_tools.get_account_positions,
+    "get_open_orders": account_tools.get_open_orders,
+    "get_recent_fills": account_tools.get_recent_fills,
+    "check_live_trade_policy": account_tools.check_live_trade_policy,
 }
 
 

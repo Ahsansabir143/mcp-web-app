@@ -38,6 +38,19 @@ class ExchangeAccount(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     approval_level: Mapped[str] = mapped_column(String(32), nullable=False, default="l0_readonly")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # ── Live connectivity status ───────────────────────────────────────────────
+    # disconnected | checking | connected | auth_error | ip_restricted | perm_error | timestamp_error
+    connection_status: Mapped[str] = mapped_column(String(32), nullable=False, default="disconnected")
+    last_connectivity_check_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+    # ── User-data stream status ───────────────────────────────────────────────
+    listen_key: Mapped[str | None] = mapped_column(String(256))
+    listen_key_expires_ms: Mapped[int | None] = mapped_column(BigInteger)
+    # stopped | connecting | connected | reconnecting | expired | auth_error
+    stream_status: Mapped[str] = mapped_column(String(32), nullable=False, default="stopped")
+    stream_last_event_ms: Mapped[int | None] = mapped_column(BigInteger)
+    stream_error: Mapped[str | None] = mapped_column(String(512))
+
     user: Mapped[User] = relationship(back_populates="exchange_accounts")
     credential_ref: Mapped[ApiCredentialRef | None] = relationship(
         back_populates="account", cascade="all, delete-orphan", uselist=False

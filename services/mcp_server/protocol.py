@@ -239,6 +239,135 @@ TOOL_DEFINITIONS = [
             "required": ["strategy_id", "target_state", "justification"],
         },
     },
+    # ── Live account observability ─────────────────────────────────────────────
+    {
+        "name": "get_account_connection_status",
+        "description": (
+            "Get the live exchange connection and WebSocket stream health for an account. "
+            "Returns connection_status, stream_status, stream age, and last event timestamp. "
+            "Useful for diagnosing why live account data may be stale or unavailable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string",
+                    "description": "Exchange account UUID. Omit to get status for all active accounts.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_account_balances",
+        "description": (
+            "Get live account balances (from Redis cache if available, otherwise DB). "
+            "Shows free, locked, and total for each asset with non-zero balance."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string",
+                    "description": "Exchange account UUID",
+                },
+                "min_total": {
+                    "type": "number",
+                    "description": "Only include assets with total >= this value. Default: 0",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_account_positions",
+        "description": (
+            "Get open positions for an account (futures and spot). "
+            "Returns symbol, side, quantity, entry price, mark price, and unrealized PnL."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string",
+                    "description": "Exchange account UUID",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_open_orders",
+        "description": (
+            "List open orders (NEW or PARTIALLY_FILLED) for an account. "
+            "Filterable by symbol."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string",
+                    "description": "Exchange account UUID",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Filter by trading pair, e.g. BTCUSDT",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max orders to return (1–200). Default: 50",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_recent_fills",
+        "description": (
+            "List recent trade fills for an account, ordered by timestamp descending. "
+            "Includes price, quantity, commission, realized PnL, and maker/taker flag."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string",
+                    "description": "Exchange account UUID",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Filter by trading pair",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max fills to return (1–100). Default: 20",
+                },
+            },
+        },
+    },
+    {
+        "name": "check_live_trade_policy",
+        "description": (
+            "Dry-run evaluation of the live trading policy for a specific account and symbol. "
+            "Returns whether all four gates would pass (enabled flag, account allowlist, "
+            "symbol allowlist, notional cap) WITHOUT submitting any order. "
+            "Use this to understand the current policy state before attempting live trading."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Trading pair to evaluate policy against, e.g. BTCUSDT",
+                },
+                "account_id": {
+                    "type": "string",
+                    "description": "Exchange account UUID to check against allowlist",
+                },
+                "notional_usd": {
+                    "type": "number",
+                    "description": "Hypothetical order size in USD to check against the notional cap",
+                },
+            },
+            "required": ["symbol"],
+        },
+    },
 ]
 
 TOOL_MAP: dict[str, dict] = {t["name"]: t for t in TOOL_DEFINITIONS}
