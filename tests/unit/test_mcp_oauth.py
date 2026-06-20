@@ -227,6 +227,41 @@ def test_discovery_urls_match_host():
     assert body["token_endpoint"].endswith("/oauth/token")
 
 
+def test_discovery_uses_forwarded_proto_https():
+    """When X-Forwarded-Proto: https is present (Railway proxy), issuer must use https://."""
+    client, _ = _app_client()
+    resp = client.get(
+        "/.well-known/oauth-authorization-server",
+        headers={"x-forwarded-proto": "https", "x-forwarded-host": "mcp-server-production-8d79.up.railway.app"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["issuer"].startswith("https://")
+    assert body["authorization_endpoint"].startswith("https://")
+    assert body["token_endpoint"].startswith("https://")
+
+
+def test_discovery_forwarded_host_overrides_netloc():
+    """X-Forwarded-Host must appear in the issuer when set."""
+    client, _ = _app_client()
+    resp = client.get(
+        "/.well-known/oauth-authorization-server",
+        headers={"x-forwarded-proto": "https", "x-forwarded-host": "custom.example.com"},
+    )
+    body = resp.json()
+    assert "custom.example.com" in body["issuer"]
+    assert body["issuer"] == "https://custom.example.com"
+
+
+def test_discovery_falls_back_to_request_scheme_without_headers():
+    """Without forwarded headers, the actual request scheme/host is used (local dev)."""
+    client, _ = _app_client()
+    resp = client.get("/.well-known/oauth-authorization-server")
+    body = resp.json()
+    # TestClient uses http://testserver — no forwarded headers present
+    assert "testserver" in body["issuer"]
+
+
 # ── /oauth/authorize ──────────────────────────────────────────────────────────
 
 
