@@ -208,6 +208,49 @@ async def request_paper_trade(
                     price_str = str((Decimal(str(bid)) + Decimal(str(ask))) / 2)
 
         if not price_str:
+            # Analytics snapshot as canonical fallback (same source as get_symbol_snapshot)
+            analytics_raw = await redis.get(
+                RedisKeys.analytics_snapshot(market_type, symbol)
+            )
+            if analytics_raw:
+                import json as _json
+                try:
+                    analytics_data = _json.loads(analytics_raw)
+                    ms = analytics_data.get("market_state") or {}
+                    p = ms.get("price")
+                    if p and str(p) not in ("", "0"):
+                        price_str = str(p)
+                except Exception:
+                    pass
+
+        if not price_str:
+            try:
+                async with session_factory() as _session:
+                    incident = IncidentLog(
+                        incident_type="paper_price_unavailable",
+                        severity="error",
+                        strategy_id=sid,
+                        description=(
+                            f"Price unavailable for {symbol}/{market_type}: "
+                            "cannot derive size from size_usd"
+                        ),
+                        context={
+                            "symbol": symbol,
+                            "market_type": market_type,
+                            "side": side_upper,
+                            "size_usd": size_usd,
+                            "strategy_id": strategy_id,
+                            "sources_tried": [
+                                "market_price_key",
+                                "book_ticker",
+                                "analytics_snapshot",
+                            ],
+                        },
+                    )
+                    _session.add(incident)
+                    await _session.commit()
+            except Exception as exc:
+                log.error("failed to log price_unavailable incident", exc_info=exc)
             return {
                 "error": "price_unavailable",
                 "message": (

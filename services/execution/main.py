@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from shared.db.session import async_session_factory
 from shared.utils.logging import get_logger, setup_logging
 from services.execution.account.context import AccountContextLoader
+from services.execution.adapter.paper import PaperExecutionAdapter
 from services.execution.config import settings
 from services.execution.consumer import ExecutionConsumer
 from services.execution.events.publisher import ExecutionEventPublisher
@@ -38,6 +39,8 @@ async def lifespan(app: FastAPI):
         repository=repository,
         risk_engine=risk_engine,
         context_loader=context_loader,
+        adapter=PaperExecutionAdapter(redis=redis),
+        incident_logger=incident_logger,
     )
     recon_consumer = NormalizedEventConsumer(
         settings=settings,

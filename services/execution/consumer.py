@@ -18,6 +18,7 @@ from services.execution.controls.cooldown import CooldownControl
 from services.execution.events.publisher import ExecutionEventPublisher
 from services.execution.jobs.client_order_id import make_client_order_id
 from services.execution.persistence.repository import ExecutionRepository
+from services.execution.reconciliation.incident import IncidentLogger
 from services.execution.risk.engine import ExecutionRiskEngine
 
 log = get_logger("execution.consumer")
@@ -40,6 +41,7 @@ class ExecutionConsumer:
         adapter: ExecutionAdapterBase | None = None,
         risk_engine: ExecutionRiskEngine | None = None,
         context_loader: AccountContextLoader | None = None,
+        incident_logger: IncidentLogger | None = None,
     ) -> None:
         self._settings = settings or ExecutionSettings()
         self._redis = redis or get_redis_client()
@@ -47,6 +49,7 @@ class ExecutionConsumer:
         self._adapter = adapter or PaperExecutionAdapter()
         self._risk_engine = risk_engine or ExecutionRiskEngine(self._redis)
         self._context_loader = context_loader
+        self._incident_logger = incident_logger
         self._publisher = ExecutionEventPublisher(self._redis)
         self._cooldown = CooldownControl(self._redis)
         self._running = False
@@ -217,9 +220,28 @@ class ExecutionConsumer:
             return
 
         if not response.success:
-            await self._on_failed(
-                job_id, client_order_id, "adapter_rejected", response.error or "unknown"
-            )
+            error_msg = response.error or "unknown"
+            if self._incident_logger and "paper_price_unavailable" in error_msg:
+                try:
+                    await self._incident_logger.log_incident(
+                        incident_type="paper_price_unavailable",
+                        description=f"Paper adapter rejected: {error_msg}",
+                        severity="error",
+                        job_id=job_id,
+                        strategy_id=intent.strategy_id,
+                        context={
+                            "symbol": intent.symbol,
+                            "market_type": intent.market_type.value,
+                            "side": intent.side.value,
+                            "size": str(intent.size),
+                            "size_usd": str(intent.size_usd) if intent.size_usd else None,
+                            "account_id": account_id,
+                            "client_order_id": client_order_id,
+                        },
+                    )
+                except Exception as exc:
+                    log.error("incident log failed", exc_info=exc)
+            await self._on_failed(job_id, client_order_id, "adapter_rejected", error_msg)
             await self._ack(msg_id)
             return
 

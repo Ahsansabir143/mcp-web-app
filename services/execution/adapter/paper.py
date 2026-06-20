@@ -17,10 +17,15 @@ class PaperExecutionAdapter(ExecutionAdapterBase):
 
     Fill-price resolution order:
       1. intent.limit_price  — LIMIT orders fill exactly here
-      2. Redis market::{market_type}:{symbol}:price  — current last-trade price
-      3. Redis market::{market_type}:{symbol}:book_ticker mid  — (bid+ask)/2
-      4. size_usd / size derivation  — last resort when Redis is unavailable
-      5. Failure (success=False)  — never fill at Decimal("0")
+      2. Redis market:{market_type}:{symbol}:price  — current last-trade price (TTL 60s)
+      3. Redis market:{market_type}:{symbol}:book_ticker mid  — (bid+ask)/2 (TTL 10s)
+      4. Redis analytics:{market_type}:{symbol}:snapshot → market_state.price
+             (same source as get_symbol_snapshot last_price; longer TTL from analytics svc)
+      5. size_usd / size derivation  — last resort when Redis is unavailable
+      6. Failure (success=False)  — never fill at Decimal("0")
+
+    Steps 2-4 use the same canonical key order as the MCP get_symbol_snapshot facade so
+    that a price visible in the snapshot is always reachable by the adapter.
 
     No network calls to any exchange; purely deterministic for replay.
     Accepts an optional redis client so callers can inject it; when None the
@@ -104,13 +109,20 @@ class PaperExecutionAdapter(ExecutionAdapterBase):
         return None
 
     async def _redis_price(self, market_type: str, symbol: str) -> Decimal | None:
-        """Try market_price key, then book_ticker mid; return None if both absent."""
+        """Try canonical price sources in priority order; return None if all absent.
+
+        Order matches get_symbol_snapshot so any price visible in the snapshot
+        is reachable by the adapter:
+          1. market:{market_type}:{symbol}:price          (60 s TTL)
+          2. market:{market_type}:{symbol}:book_ticker    (10 s TTL, mid)
+          3. analytics:{market_type}:{symbol}:snapshot    (longer TTL, market_state.price)
+        """
         raw = await self._redis.get(RedisKeys.market_price(market_type, symbol))
         if raw:
             try:
                 data = json.loads(raw)
                 price_str = data.get("price")
-                if price_str:
+                if price_str and str(price_str) not in ("", "0"):
                     return Decimal(str(price_str))
             except Exception:
                 pass
@@ -121,8 +133,21 @@ class PaperExecutionAdapter(ExecutionAdapterBase):
                 book = json.loads(book_raw)
                 bid = book.get("bid_price")
                 ask = book.get("ask_price")
-                if bid and ask:
+                if bid and ask and str(bid) not in ("", "0") and str(ask) not in ("", "0"):
                     return (Decimal(str(bid)) + Decimal(str(ask))) / 2
+            except Exception:
+                pass
+
+        analytics_raw = await self._redis.get(
+            RedisKeys.analytics_snapshot(market_type, symbol)
+        )
+        if analytics_raw:
+            try:
+                snapshot = json.loads(analytics_raw)
+                ms = snapshot.get("market_state") or {}
+                p = ms.get("price")
+                if p and str(p) not in ("", "0"):
+                    return Decimal(str(p))
             except Exception:
                 pass
 
