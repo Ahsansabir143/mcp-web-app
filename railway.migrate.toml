@@ -1,5 +1,2 @@
 [build]
 dockerfilePath = "Dockerfile.migrate"
-
-[deploy]
-healthcheckPath = "/health"
