@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "services/normalizer/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"

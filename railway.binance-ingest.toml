@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "services/binance_ingest/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"

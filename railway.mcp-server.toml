@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "services/mcp_server/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"

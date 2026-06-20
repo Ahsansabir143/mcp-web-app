@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "services/strategy_service/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
