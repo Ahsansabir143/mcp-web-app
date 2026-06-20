@@ -1,11 +1,24 @@
 """OAuth 2.0 PKCE authorization and token endpoints.
 
-Phase note: /oauth/authorize accepts ``user_id`` as a query parameter (internal
-demo mode).  In production this endpoint would gate on a login session cookie and
-derive the identity server-side.  The PKCE mechanics, code/token Redis storage, and
-token exchange are production-ready; only the identity derivation is simplified.
+/oauth/authorize
+  Derives the authenticated user from the signed session cookie set by POST /login.
+  If no valid session cookie is present, redirects to /login?next=<authorize-url>.
+
+  Demo fallback: when OAUTH_DEMO_MODE=true (disabled by default), the endpoint
+  also accepts a user_id query parameter as a fallback.  This is only for local
+  testing and must never be enabled in production.
+
+/oauth/token
+  Exchanges a PKCE auth code + code_verifier for a bearer token.
+  Token and code are both stored in Redis with configured TTLs.
+
+Client allowlist:
+  Set ALLOWED_CLIENT_IDS to a comma-separated list of permitted client_id values.
+  When empty (default), any client_id is accepted.
 """
 from __future__ import annotations
+
+import urllib.parse
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -19,8 +32,31 @@ from services.mcp_server.oauth.store import (
     store_bearer_token,
     verify_pkce_s256,
 )
+from services.mcp_server.session_cookie import COOKIE_NAME, verify_session_cookie
 
 router = APIRouter(prefix="/oauth")
+
+
+def _allowed_clients() -> list[str]:
+    """Parse ALLOWED_CLIENT_IDS setting into a list; empty list means allow all."""
+    return [c.strip() for c in settings.allowed_client_ids.split(",") if c.strip()]
+
+
+def _resolve_user(request: Request) -> str | None:
+    """Return user_id from session cookie, or demo fallback, or None.
+
+    Cookie takes priority over demo query param.
+    """
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    if cookie_val:
+        uid = verify_session_cookie(cookie_val, settings.secret_key)
+        if uid:
+            return uid
+
+    if settings.oauth_demo_mode:
+        return request.query_params.get("user_id") or "demo-user"
+
+    return None
 
 
 @router.get("/authorize")
@@ -32,9 +68,14 @@ async def authorize(
     code_challenge: str = "",
     code_challenge_method: str = "",
     state: str = "",
-    user_id: str = "anonymous",
 ) -> RedirectResponse:
-    """PKCE authorization endpoint — issues an auth code and redirects."""
+    """PKCE authorization endpoint.
+
+    Requires an authenticated session (session cookie from POST /login).
+    Unauthenticated requests are redirected to /login with the full authorize
+    URL preserved as the 'next' parameter so the flow resumes after login.
+    """
+    # Validate PKCE params before session check so malformed requests fail fast.
     if response_type != "code":
         raise HTTPException(400, detail="only response_type=code is supported")
     if not client_id:
@@ -45,6 +86,21 @@ async def authorize(
         raise HTTPException(400, detail="code_challenge is required (PKCE)")
     if code_challenge_method.upper() != "S256":
         raise HTTPException(400, detail="only code_challenge_method=S256 is supported")
+
+    # Validate client_id against allowlist (if configured).
+    allowed = _allowed_clients()
+    if allowed and client_id not in allowed:
+        raise HTTPException(403, detail=f"client_id '{client_id}' is not permitted")
+
+    # Require authenticated session.
+    user_id = _resolve_user(request)
+    if user_id is None:
+        # Redirect to login, preserving the full authorize path+query as 'next'.
+        path_with_query = request.url.path
+        if request.url.query:
+            path_with_query += "?" + request.url.query
+        next_param = urllib.parse.quote(path_with_query, safe="")
+        return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
 
     redis = request.app.state.redis
     code = generate_auth_code()

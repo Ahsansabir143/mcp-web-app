@@ -34,6 +34,7 @@ from services.mcp_server.auth import verify_mcp_auth
 from services.mcp_server.config import settings
 from services.mcp_server.health import router as health_router
 from services.mcp_server.identity import McpIdentity
+from services.mcp_server.login import router as login_router
 from services.mcp_server.oauth.discovery import router as discovery_router
 from services.mcp_server.oauth.handlers import router as oauth_router
 from services.mcp_server.session import RedisSessionRegistry
@@ -77,6 +78,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="trading-platform-mcp", version="0.1.0", lifespan=lifespan)
 app.include_router(health_router)
+app.include_router(login_router)
 app.include_router(discovery_router)
 app.include_router(oauth_router)
 

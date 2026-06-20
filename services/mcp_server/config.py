@@ -16,5 +16,14 @@ class McpServerSettings(BaseServiceSettings):
     auth_code_ttl_s: int = 120
     access_token_ttl_s: int = 3600
 
+    # Login / session cookie settings
+    mcp_login_username: str = "mcp-admin"
+    mcp_login_password: str = ""           # must be set; login always fails when empty
+    allowed_client_ids: str = ""           # comma-separated; empty = allow any client_id
+
+    # Demo fallback: when True, /oauth/authorize accepts user_id query param without session.
+    # DISABLED by default — set OAUTH_DEMO_MODE=true only for local testing.
+    oauth_demo_mode: bool = False
+
 
 settings = McpServerSettings()

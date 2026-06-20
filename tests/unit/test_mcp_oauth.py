@@ -263,48 +263,63 @@ def test_authorize_rejects_plain_method():
     assert "S256" in resp.json()["detail"]
 
 
-def test_authorize_redirects_with_code():
-    client, redis = _app_client()
-    verifier, challenge = _pkce_pair()
-    resp = client.get(
-        "/oauth/authorize",
-        params={
-            "response_type": "code",
-            "client_id": "claude",
-            "redirect_uri": "https://example.com/cb",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": "mystate",
-            "user_id": "user-1",
-        },
-        follow_redirects=False,
-    )
+def test_authorize_without_session_redirects_to_login():
+    """Without a session cookie, /oauth/authorize must redirect to /login."""
+    client, _ = _app_client()
+    _, challenge = _pkce_pair()
+    with patch("services.mcp_server.oauth.handlers.settings") as ms:
+        ms.oauth_demo_mode = False
+        ms.allowed_client_ids = ""
+        ms.secret_key = "test-secret"
+        ms.auth_code_ttl_s = 120
+        resp = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude",
+                "redirect_uri": "https://example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "mystate",
+            },
+            follow_redirects=False,
+        )
     assert resp.status_code == 302
     location = resp.headers["location"]
-    assert "code=" in location
-    assert "state=mystate" in location
-    assert location.startswith("https://example.com/cb")
+    assert "/login" in location
+    assert "next=" in location
 
 
 # ── /oauth/token ──────────────────────────────────────────────────────────────
 
 
-def _do_authorize(client, redis, *, user_id="user-1", state="s") -> str:
-    """Run /oauth/authorize and return the code from the redirect."""
+def _do_authorize(client, redis, *, user_id="user-1", state="s") -> tuple[str, str]:
+    """Run /oauth/authorize in demo mode and return (code, verifier).
+
+    Uses OAUTH_DEMO_MODE=True so the token-exchange tests can obtain a code
+    without needing a real login session.  The authenticated path (session cookie
+    required) is fully tested in test_mcp_login.py.
+    """
     verifier, challenge = _pkce_pair()
-    resp = client.get(
-        "/oauth/authorize",
-        params={
-            "response_type": "code",
-            "client_id": "claude",
-            "redirect_uri": "https://example.com/cb",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": state,
-            "user_id": user_id,
-        },
-        follow_redirects=False,
-    )
+    with patch("services.mcp_server.oauth.handlers.settings") as ms:
+        ms.oauth_demo_mode = True
+        ms.allowed_client_ids = ""
+        ms.secret_key = "test-secret"
+        ms.auth_code_ttl_s = 120
+        ms.access_token_ttl_s = 3600
+        resp = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude",
+                "redirect_uri": "https://example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": state,
+                "user_id": user_id,
+            },
+            follow_redirects=False,
+        )
     assert resp.status_code == 302
     loc = resp.headers["location"]
     code = dict(p.split("=", 1) for p in loc.split("?", 1)[1].split("&"))["code"]
