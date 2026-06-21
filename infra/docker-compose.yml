@@ -104,5 +104,15 @@ services:
     ports:
       - "8000:8000"
 
+  mcp-web-gateway:
+    build:
+      context: ..
+      dockerfile: services/mcp_web_gateway/Dockerfile
+    env_file: ../.env
+    depends_on:
+      mcp-server: { condition: service_started }
+    ports:
+      - "8007:8007"
+
 volumes:
   pg_data:

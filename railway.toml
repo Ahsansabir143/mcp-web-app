@@ -57,6 +57,14 @@ healthcheck = "/health"
 [[services.variables]]
 PORT = "8006"
 
+[[services]]
+name = "mcp-web-gateway"
+dockerfile = "services/mcp_web_gateway/Dockerfile"
+healthcheck = "/health"
+
+[[services.variables]]
+PORT = "8007"
+
 # ── Migration service ─────────────────────────────────────────────────────────
 # One-shot: runs `alembic upgrade head` then exits.
 # Deploy this service first (or manually via Railway "Deploy" button) before
