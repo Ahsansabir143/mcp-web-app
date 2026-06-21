@@ -314,9 +314,9 @@ async def main() -> int:
 
     if success:
         print("SUCCESS")
-        print("─" * 50)
+        print("-" * 50)
         print(message)
-        print("─" * 50)
+        print("-" * 50)
         print(
             "\nNext steps:\n"
             "  1. Remove BINANCE_API_KEY / BINANCE_API_SECRET from Railway vars if present\n"
