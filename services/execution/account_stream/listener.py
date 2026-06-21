@@ -1,20 +1,28 @@
 """AccountStreamListener — Binance user-data WebSocket for one exchange account.
 
-Lifecycle:
-  1. Get listen key via REST POST
-  2. Connect to wss://{ws_base}/ws/{listen_key}
-  3. Handle incoming events → AccountStateWriter → DB + Redis
-  4. Keepalive listen key every listen_key_refresh_interval_s
-  5. On disconnect: exponential backoff + reconnect
-  6. On auth failure: mark account stream_status=auth_error, stop, log incident
+Spot path   : Binance WebSocket API  userDataStream.subscribe.signature
+              wss://ws-api.binance.com:443/ws-api/v3  (no REST listenKey)
+Futures path: REST listenKey + /ws/{listenKey} stream  (legacy, unchanged)
 
-Supported event types:
-  Spot:    outboundAccountPosition, balanceUpdate, executionReport
-  Futures: ACCOUNT_UPDATE, ORDER_TRADE_UPDATE
+Lifecycle (spot):
+  1. Connect to WS API endpoint
+  2. Send signed userDataStream.subscribe.signature request
+  3. Verify ACK (status 200); record subscriptionId
+  4. Stream incoming user-data events → AccountStateWriter → DB + Redis
+  5. On disconnect: exponential backoff + reconnect + resubscribe
+  6. On auth failure (401/403): mark stream_status=auth_error, log incident, stop
+
+Lifecycle (futures, unchanged):
+  1. GET listen key via REST POST /fapi/v1/listenKey
+  2. Connect to wss://fstream.binance.com/ws/{listenKey}
+  3. Keepalive listen key every listen_key_refresh_interval_s
+  4. On disconnect: reconnect to same URL; on auth error: stop
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import time
 import uuid
@@ -36,14 +44,82 @@ _CLOSE_TIMEOUT = 5
 _RECONNECT_BASE_S = 2.0
 _RECONNECT_MAX_S = 60.0
 _RECONNECT_FACTOR = 2.0
+_SUBSCRIBE_TIMEOUT_S = 15.0
 
-# Binance listen-key paths
-_SPOT_LK_PATH = "/api/v3/userDataStream"
+# ── Spot WS API ───────────────────────────────────────────────────────────────
+_WS_SUBSCRIBE_METHOD = "userDataStream.subscribe.signature"
+_AUTH_WS_STATUSES = {401, 403}
+
+# ── Futures REST listenKey (unchanged) ────────────────────────────────────────
 _FUTURES_LK_PATH = "/fapi/v1/listenKey"
-
-# HTTP status that typically indicates auth failure on listen key creation
 _AUTH_HTTP_CODES = {401, 403}
 
+
+class _AuthError(Exception):
+    """Non-retryable authentication or permission failure."""
+
+
+# ── Module-level pure functions (testable without instantiation) ──────────────
+
+def _build_subscribe_request(
+    api_key: str,
+    api_secret: str,
+    *,
+    ts: int | None = None,
+    req_id: str | None = None,
+) -> tuple[str, str]:
+    """Build a signed WS API userDataStream.subscribe.signature request.
+
+    Returns ``(json_string, request_id)``.  ``ts`` and ``req_id`` can be
+    injected by tests for deterministic output; in production both are
+    generated automatically.
+    """
+    if ts is None:
+        ts = int(time.time() * 1000)
+    if req_id is None:
+        req_id = str(uuid.uuid4())
+
+    qs = f"apiKey={api_key}&timestamp={ts}"
+    sig = hmac.new(
+        api_secret.encode("utf-8"),
+        qs.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    payload = {
+        "id": req_id,
+        "method": _WS_SUBSCRIBE_METHOD,
+        "params": {
+            "apiKey": api_key,
+            "timestamp": ts,
+            "signature": sig,
+        },
+    }
+    return json.dumps(payload), req_id
+
+
+def _check_subscribe_response(resp: dict, expected_id: str) -> None:
+    """Validate a WS API subscribe ACK.
+
+    Raises _AuthError for 401/403 (non-retryable).
+    Raises RuntimeError for other non-200 responses.
+    Returns silently for status 200, or if resp.id doesn't match.
+    """
+    if resp.get("id") != expected_id:
+        return
+    status = resp.get("status", 0)
+    if status == 200:
+        return
+    err = resp.get("error") or {}
+    code = err.get("code", "?") if isinstance(err, dict) else "?"
+    msg = err.get("msg", str(resp)) if isinstance(err, dict) else str(resp)
+    err_text = f"subscribe {status}: {code} {msg}"
+    if status in _AUTH_WS_STATUSES:
+        raise _AuthError(err_text)
+    raise RuntimeError(err_text)
+
+
+# ── Listener ──────────────────────────────────────────────────────────────────
 
 class AccountStreamListener:
     """Manages the full user-data stream lifecycle for one exchange account."""
@@ -60,41 +136,147 @@ class AccountStreamListener:
         redis,
         incident_logger=None,
         listen_key_refresh_interval_s: float = 1800.0,
+        ws_api_base: str = "wss://ws-api.binance.com:443/ws-api/v3",
     ) -> None:
         self._account_id = account_id
         self._account_id_str = str(account_id)
         self._api_key = api_key
+        self._api_secret = api_secret
         self._market_type = market_type
-        self._ws_base = ws_base
-        self._rest_base = rest_base
+        self._ws_base = ws_base          # futures stream: {ws_base}/ws/{listen_key}
+        self._rest_base = rest_base      # futures REST listenKey endpoint
+        self._ws_api_base = ws_api_base  # spot WS API endpoint
         self._session_factory = session_factory
         self._redis = redis
         self._incident_logger = incident_logger
         self._refresh_interval = listen_key_refresh_interval_s
         self._writer = AccountStateWriter(session_factory, redis, account_id)
         self._stop = asyncio.Event()
-        self._listen_key: str | None = None
+        self._listen_key: str | None = None        # futures only
+        self._subscription_id: str | None = None   # spot WS API only
 
     def stop(self) -> None:
         self._stop.set()
 
-    @property
-    def _lk_path(self) -> str:
-        return _FUTURES_LK_PATH if self._market_type == "futures" else _SPOT_LK_PATH
+    # ── Entry point ───────────────────────────────────────────────────────────
 
     async def run(self) -> None:
         await self._set_status("connecting")
+        if self._market_type == "spot":
+            await self._run_ws_api()
+        else:
+            await self._run_legacy_stream()
+
+    # ── Spot path: Binance WebSocket API ─────────────────────────────────────
+
+    async def _run_ws_api(self) -> None:
+        """Spot user-data stream via Binance WS API (no REST listenKey)."""
+        attempt = 0
+        while not self._stop.is_set():
+            try:
+                await self._connect_and_subscribe()
+                attempt = 0
+            except _AuthError as exc:
+                log.error(
+                    "stream auth failed — stream disabled",
+                    account_id=self._account_id_str,
+                    error=str(exc),
+                )
+                await self._set_status("auth_error", error=str(exc))
+                await self._log_incident("stream_auth_error", str(exc), "error")
+                return
+            except ConnectionClosed as exc:
+                log.warning(
+                    "user-data stream closed",
+                    account_id=self._account_id_str,
+                    error=str(exc),
+                )
+                await self._set_status("reconnecting", error=str(exc))
+            except Exception as exc:
+                log.error(
+                    "user-data stream error",
+                    account_id=self._account_id_str,
+                    error=str(exc),
+                )
+                await self._set_status("reconnecting", error=str(exc))
+
+            if self._stop.is_set():
+                break
+
+            delay = min(_RECONNECT_MAX_S, _RECONNECT_BASE_S * (_RECONNECT_FACTOR ** attempt))
+            attempt += 1
+            log.info(f"reconnecting in {delay:.1f}s", account_id=self._account_id_str)
+            await asyncio.sleep(delay)
+
+        await self._set_status("stopped")
+        log.info("user-data stream stopped", account_id=self._account_id_str)
+
+    async def _connect_and_subscribe(self) -> None:
+        """Open one WS API connection, subscribe, and stream events until disconnect."""
+        async with websockets.connect(
+            self._ws_api_base,
+            ping_interval=_PING_INTERVAL,
+            ping_timeout=_PING_TIMEOUT,
+            close_timeout=_CLOSE_TIMEOUT,
+        ) as ws:
+            req_json, req_id = _build_subscribe_request(self._api_key, self._api_secret)
+            await ws.send(req_json)
+
+            raw_ack = await asyncio.wait_for(ws.recv(), timeout=_SUBSCRIBE_TIMEOUT_S)
+            ack = json.loads(raw_ack)
+            _check_subscribe_response(ack, req_id)
+
+            self._subscription_id = (
+                ack.get("result", {}).get("subscriptionId")
+                if isinstance(ack.get("result"), dict)
+                else None
+            )
+
+            await self._set_status("connected")
+            log.info(
+                "user-data stream connected (WS API)",
+                account_id=self._account_id_str,
+                market_type=self._market_type,
+                subscription_id=self._subscription_id,
+            )
+
+            async for raw_msg in ws:
+                if self._stop.is_set():
+                    break
+                payload = json.loads(raw_msg)
+                if "id" in payload:
+                    # Response to a request we sent (not a user-data event)
+                    continue
+                try:
+                    await self._handle_event(payload)
+                    await self._mark_event()
+                except Exception as exc:
+                    log.warning(
+                        "event handling error",
+                        account_id=self._account_id_str,
+                        error=str(exc),
+                    )
+
+    # ── Futures path: REST listenKey + stream WS (original) ──────────────────
+
+    async def _run_legacy_stream(self) -> None:
+        """Futures user-data stream via REST listenKey (original implementation)."""
         try:
             listen_key = await self._create_listen_key()
         except Exception as exc:
-            log.error("listen key creation failed — stream disabled",
-                      account_id=self._account_id_str, error=str(exc))
+            log.error(
+                "listen key creation failed — stream disabled",
+                account_id=self._account_id_str,
+                error=str(exc),
+            )
             await self._set_status("auth_error", error=str(exc))
             await self._log_incident("stream_auth_error", str(exc), "error")
             return
 
         self._listen_key = listen_key
-        refresh_task = asyncio.create_task(self._keepalive_loop(), name=f"lk-refresh-{self._account_id_str}")
+        refresh_task = asyncio.create_task(
+            self._keepalive_loop(), name=f"lk-refresh-{self._account_id_str}"
+        )
         attempt = 0
 
         try:
@@ -110,9 +292,11 @@ class AccountStreamListener:
                     ) as ws:
                         await self._set_status("connected")
                         attempt = 0
-                        log.info("user-data stream connected",
-                                 account_id=self._account_id_str, market_type=self._market_type)
-
+                        log.info(
+                            "user-data stream connected",
+                            account_id=self._account_id_str,
+                            market_type=self._market_type,
+                        )
                         async for raw_msg in ws:
                             if self._stop.is_set():
                                 break
@@ -120,17 +304,25 @@ class AccountStreamListener:
                                 payload = json.loads(raw_msg)
                                 await self._handle_event(payload)
                                 await self._mark_event()
-                            except Exception as e:
-                                log.warning("event handling error",
-                                            account_id=self._account_id_str, error=str(e))
-
+                            except Exception as exc:
+                                log.warning(
+                                    "event handling error",
+                                    account_id=self._account_id_str,
+                                    error=str(exc),
+                                )
                 except ConnectionClosed as exc:
-                    log.warning("user-data stream closed",
-                                account_id=self._account_id_str, error=str(exc))
+                    log.warning(
+                        "user-data stream closed",
+                        account_id=self._account_id_str,
+                        error=str(exc),
+                    )
                     await self._set_status("reconnecting", error=str(exc))
                 except Exception as exc:
-                    log.error("user-data stream error",
-                              account_id=self._account_id_str, error=str(exc))
+                    log.error(
+                        "user-data stream error",
+                        account_id=self._account_id_str,
+                        error=str(exc),
+                    )
                     await self._set_status("reconnecting", error=str(exc))
 
                 if self._stop.is_set():
@@ -150,13 +342,14 @@ class AccountStreamListener:
             await self._set_status("stopped")
             log.info("user-data stream stopped", account_id=self._account_id_str)
 
+    # ── Event handling (shared by both paths) ─────────────────────────────────
+
     async def _handle_event(self, payload: dict) -> None:
         event_type = payload.get("e", "")
         ts_ms = int(payload.get("E", time.time() * 1000))
 
         if event_type == "outboundAccountPosition":
-            balances = payload.get("B", [])
-            await self._writer.upsert_balances(balances, ts_ms)
+            await self._writer.upsert_balances(payload.get("B", []), ts_ms)
 
         elif event_type == "balanceUpdate":
             asset = payload.get("a", "")
@@ -179,8 +372,7 @@ class AccountStreamListener:
                 await self._writer.upsert_positions(positions, ts_ms)
 
         elif event_type == "ORDER_TRADE_UPDATE":
-            order_data = payload.get("o", {})
-            await self._writer.upsert_order_from_futures_report(order_data)
+            await self._writer.upsert_order_from_futures_report(payload.get("o", {}))
 
     async def _mark_event(self) -> None:
         now_ms = int(time.time() * 1000)
@@ -212,10 +404,12 @@ class AccountStreamListener:
         except Exception as exc:
             log.warning("stream status update failed", exc_info=exc)
 
+    # ── Futures-only: REST listenKey lifecycle ────────────────────────────────
+
     async def _create_listen_key(self) -> str:
         async with aiohttp.ClientSession(base_url=self._rest_base) as http:
             async with http.post(
-                self._lk_path, headers={"X-MBX-APIKEY": self._api_key}
+                _FUTURES_LK_PATH, headers={"X-MBX-APIKEY": self._api_key}
             ) as resp:
                 if resp.status in _AUTH_HTTP_CODES:
                     raise PermissionError(f"listen key HTTP {resp.status}")
@@ -229,7 +423,7 @@ class AccountStreamListener:
         try:
             async with aiohttp.ClientSession(base_url=self._rest_base) as http:
                 async with http.delete(
-                    self._lk_path,
+                    _FUTURES_LK_PATH,
                     params={"listenKey": self._listen_key},
                     headers={"X-MBX-APIKEY": self._api_key},
                 ) as resp:
@@ -245,16 +439,21 @@ class AccountStreamListener:
             try:
                 async with aiohttp.ClientSession(base_url=self._rest_base) as http:
                     async with http.put(
-                        self._lk_path,
+                        _FUTURES_LK_PATH,
                         params={"listenKey": self._listen_key},
                         headers={"X-MBX-APIKEY": self._api_key},
                     ) as resp:
                         resp.raise_for_status()
                 log.info("listen key refreshed", account_id=self._account_id_str)
             except Exception as exc:
-                log.error("listen key keepalive failed",
-                          account_id=self._account_id_str, exc_info=exc)
+                log.error(
+                    "listen key keepalive failed",
+                    account_id=self._account_id_str,
+                    exc_info=exc,
+                )
                 await self._log_incident("stream_keepalive_failed", str(exc), "warning")
+
+    # ── Incident logging (shared) ─────────────────────────────────────────────
 
     async def _log_incident(self, incident_type: str, message: str, severity: str) -> None:
         if self._incident_logger is None:

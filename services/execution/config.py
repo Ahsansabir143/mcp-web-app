@@ -38,11 +38,13 @@ class ExecutionSettings(BaseServiceSettings):
 
     # ── User-data stream ──────────────────────────────────────────────────────
     account_stream_enabled: bool = False
-    binance_ws_spot_base: str = "wss://stream.binance.com:9443"
+    # Spot: WS API endpoint (userDataStream.subscribe.signature, no REST listenKey)
+    binance_ws_api_spot: str = "wss://ws-api.binance.com:443/ws-api/v3"
+    # Futures: legacy stream base (wss://fstream.binance.com/ws/{listenKey})
     binance_ws_futures_base: str = "wss://fstream.binance.com"
     binance_rest_spot: str = "https://api.binance.com"
     binance_rest_futures: str = "https://fapi.binance.com"
-    listen_key_refresh_interval_s: float = 1800.0
+    listen_key_refresh_interval_s: float = 1800.0  # futures keepalive only
 
     port: int = 8005
 

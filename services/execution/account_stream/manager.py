@@ -63,24 +63,16 @@ class AccountStreamManager:
                 continue
 
             market_type = acct.venue == "binance_futures" and "futures" or "spot"
-            ws_base = (
-                self._settings.binance_ws_futures_base
-                if market_type == "futures"
-                else self._settings.binance_ws_spot_base
-            )
-            rest_base = (
-                self._settings.binance_rest_futures
-                if market_type == "futures"
-                else self._settings.binance_rest_spot
-            )
 
             listener = AccountStreamListener(
                 account_id=acct.id,
                 api_key=creds_full[0],
                 api_secret=creds_full[1],
                 market_type=market_type,
-                ws_base=ws_base,
-                rest_base=rest_base,
+                # spot uses ws_api_base; futures uses ws_base + rest_base
+                ws_base=self._settings.binance_ws_futures_base,
+                rest_base=self._settings.binance_rest_futures,
+                ws_api_base=self._settings.binance_ws_api_spot,
                 session_factory=self._factory,
                 redis=self._redis,
                 incident_logger=self._incident_logger,
