@@ -120,6 +120,67 @@ async def get_incidents(
     return rows
 
 
+# ── Price resolution helper ───────────────────────────────────────────────────
+
+
+async def _resolve_price_from_redis(
+    redis: RedisClient,
+    market_type: str,
+    symbol: str,
+) -> str | None:
+    """Return price string for market_type/symbol from Redis, or None.
+
+    Priority order matches get_symbol_snapshot and PaperExecutionAdapter:
+      1. analytics snapshot  (market_state.price — canonical, refreshed every ~1 s)
+      2. market price key    (per-trade write, 60 s TTL)
+      3. book ticker mid     (10 s TTL)
+    """
+    import json as _json
+
+    # 1. Analytics snapshot (same source as get_symbol_snapshot)
+    analytics_raw = await redis.get(RedisKeys.analytics_snapshot(market_type, symbol))
+    if analytics_raw:
+        try:
+            data = _json.loads(analytics_raw)
+            ms = data.get("market_state") or {}
+            p = ms.get("price")
+            if p is not None and str(p) not in ("", "0", "None"):
+                candidate = Decimal(str(p))
+                if candidate > 0:
+                    return str(candidate)
+        except Exception:
+            pass
+
+    # 2. Market price key
+    price_raw = await redis.get(RedisKeys.market_price(market_type, symbol))
+    if price_raw:
+        try:
+            pd = _json.loads(price_raw)
+            price_str = str(pd.get("price") or pd.get("mark_price") or "")
+            if price_str and price_str not in ("", "0"):
+                candidate = Decimal(price_str)
+                if candidate > 0:
+                    return price_str
+        except Exception:
+            pass
+
+    # 3. Book ticker mid-price
+    book_raw = await redis.get(RedisKeys.market_book_ticker(market_type, symbol))
+    if book_raw:
+        try:
+            bk = _json.loads(book_raw)
+            bid = bk.get("bid_price")
+            ask = bk.get("ask_price")
+            if bid and ask:
+                mid = (Decimal(str(bid)) + Decimal(str(ask))) / 2
+                if mid > 0:
+                    return str(mid)
+        except Exception:
+            pass
+
+    return None
+
+
 # ── Paper trade ───────────────────────────────────────────────────────────────
 
 
@@ -187,41 +248,19 @@ async def request_paper_trade(
         return {"error": "invalid_size", "message": str(exc)}
 
     if decimal_size is None:
-        # Try to get current price from Redis
+        # Try to get current price from Redis for size derivation.
+        # Priority: analytics snapshot → market price → book ticker.
+        # On miss, also try the complementary market type (spot ↔ futures) as a
+        # paper-mode fallback, since prices are nearly identical.
         market_type = strategy.market_type or "futures"
-        price_str = None
-        price_raw = await redis.get(RedisKeys.market_price(market_type, symbol))
-        if price_raw:
-            import json
-            pd = json.loads(price_raw)
-            price_str = str(pd.get("price") or pd.get("mark_price") or "")
+        price_str = await _resolve_price_from_redis(redis, market_type, symbol)
 
         if not price_str:
-            # Also try book ticker
-            book_raw = await redis.get(RedisKeys.market_book_ticker(market_type, symbol))
-            if book_raw:
-                import json
-                bk = json.loads(book_raw)
-                bid = bk.get("bid_price")
-                ask = bk.get("ask_price")
-                if bid and ask:
-                    price_str = str((Decimal(str(bid)) + Decimal(str(ask))) / 2)
-
-        if not price_str:
-            # Analytics snapshot as canonical fallback (same source as get_symbol_snapshot)
-            analytics_raw = await redis.get(
-                RedisKeys.analytics_snapshot(market_type, symbol)
-            )
-            if analytics_raw:
-                import json as _json
-                try:
-                    analytics_data = _json.loads(analytics_raw)
-                    ms = analytics_data.get("market_state") or {}
-                    p = ms.get("price")
-                    if p and str(p) not in ("", "0"):
-                        price_str = str(p)
-                except Exception:
-                    pass
+            # Cross-market fallback (spot ↔ futures) — paper mode only
+            _FALLBACK = {"spot": "futures", "futures": "spot"}
+            fallback_mtype = _FALLBACK.get(market_type)
+            if fallback_mtype:
+                price_str = await _resolve_price_from_redis(redis, fallback_mtype, symbol)
 
         if not price_str:
             try:
@@ -241,9 +280,12 @@ async def request_paper_trade(
                             "size_usd": size_usd,
                             "strategy_id": strategy_id,
                             "sources_tried": [
+                                "analytics_snapshot",
                                 "market_price_key",
                                 "book_ticker",
-                                "analytics_snapshot",
+                                "analytics_snapshot_fallback_mtype",
+                                "market_price_key_fallback_mtype",
+                                "book_ticker_fallback_mtype",
                             ],
                         },
                     )

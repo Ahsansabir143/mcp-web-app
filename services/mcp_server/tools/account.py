@@ -53,6 +53,12 @@ async def get_recent_fills(
     return await account_facade.get_recent_fills(session_factory, account_id, symbol, limit)
 
 
+async def get_stream_health(
+    args: dict, *, redis, session_factory, user_identity=None
+) -> dict:
+    return await account_facade.get_stream_health(session_factory, redis)
+
+
 async def check_live_trade_policy(
     args: dict, *, redis, session_factory, user_identity=None
 ) -> dict:

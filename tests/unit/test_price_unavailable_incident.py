@@ -99,8 +99,8 @@ async def test_adapter_reads_analytics_snapshot_when_raw_price_absent():
 
 
 @pytest.mark.asyncio
-async def test_adapter_prefers_raw_price_over_analytics_snapshot():
-    """market_price key takes priority over analytics snapshot."""
+async def test_adapter_analytics_snapshot_beats_raw_price():
+    """analytics snapshot (priority 1) wins over market_price key (priority 2)."""
     market_type = MarketType.SPOT
     symbol = "BTCUSDT"
     analytics_key = RedisKeys.analytics_snapshot(market_type.value, symbol)
@@ -109,27 +109,26 @@ async def test_adapter_prefers_raw_price_over_analytics_snapshot():
     redis = AsyncMock()
 
     async def get(key: str):
-        if key == price_key:
-            return _price_payload(65000.0)
         if key == analytics_key:
             return _analytics_payload(70000.0)
+        if key == price_key:
+            return _price_payload(65000.0)
         return None
 
     redis.get = AsyncMock(side_effect=get)
 
     adapter = PaperExecutionAdapter(redis=redis)
-    resp = await adapter.submit(_request(_intent()), "coid-price-priority")
+    resp = await adapter.submit(_request(_intent()), "coid-analytics-wins")
 
     assert resp.success is True
-    assert resp.fill_price == Decimal("65000.00")
+    assert resp.fill_price == Decimal("70000.00")  # analytics snapshot first
 
 
 @pytest.mark.asyncio
-async def test_adapter_prefers_book_ticker_over_analytics_snapshot():
-    """book_ticker mid takes priority over analytics snapshot."""
+async def test_adapter_falls_back_to_book_ticker_when_analytics_absent():
+    """When analytics snapshot absent, book_ticker mid is used."""
     market_type = MarketType.SPOT
     symbol = "BTCUSDT"
-    analytics_key = RedisKeys.analytics_snapshot(market_type.value, symbol)
     book_key = RedisKeys.market_book_ticker(market_type.value, symbol)
 
     redis = AsyncMock()
@@ -137,14 +136,12 @@ async def test_adapter_prefers_book_ticker_over_analytics_snapshot():
     async def get(key: str):
         if key == book_key:
             return _book_payload(59900.0, 60100.0)
-        if key == analytics_key:
-            return _analytics_payload(70000.0)
-        return None
+        return None  # analytics and market_price both absent
 
     redis.get = AsyncMock(side_effect=get)
 
     adapter = PaperExecutionAdapter(redis=redis)
-    resp = await adapter.submit(_request(_intent()), "coid-book-priority")
+    resp = await adapter.submit(_request(_intent()), "coid-book-fallback")
 
     assert resp.success is True
     assert resp.fill_price == Decimal("60000.00")  # (59900 + 60100) / 2
@@ -412,8 +409,8 @@ async def test_consumer_logs_incident_on_paper_price_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_consumer_does_not_log_incident_on_other_adapter_failures():
-    """Non-price-unavailable failures do not produce an incident."""
+async def test_consumer_logs_execution_failure_incident_for_non_price_errors():
+    """Any adapter failure (not just price_unavailable) logs an execution_failure incident."""
     from services.execution.consumer import ExecutionConsumer
     from services.execution.config import ExecutionSettings
     from services.execution.adapter.base import AdapterResponse
@@ -470,4 +467,111 @@ async def test_consumer_does_not_log_incident_on_other_adapter_failures():
 
     await consumer._process("msg-1", {"intent": intent.model_dump_json()})
 
-    incident_logger.log_incident.assert_not_awaited()
+    incident_logger.log_incident.assert_awaited_once()
+    call_kwargs = incident_logger.log_incident.call_args
+    assert call_kwargs.kwargs.get("incident_type") == "execution_failure"
+    assert call_kwargs.kwargs["context"]["symbol"] == "BTCUSDT"
+
+
+# ── Cross-market fallback (spot ↔ futures) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_paper_adapter_falls_back_to_futures_when_spot_empty():
+    """Spot intent with empty spot Redis keys resolves price from futures keys."""
+    from shared.redis.keys import RedisKeys as RK
+
+    spot_analytics = RK.analytics_snapshot("spot", "BTCUSDT")
+    spot_price = RK.market_price("spot", "BTCUSDT")
+    spot_book = RK.market_book_ticker("spot", "BTCUSDT")
+    futures_analytics = RK.analytics_snapshot("futures", "BTCUSDT")
+
+    redis = AsyncMock()
+
+    async def get(key: str):
+        if key == futures_analytics:
+            return _analytics_payload(63500.0)
+        # All spot keys return None
+        return None
+
+    redis.get = AsyncMock(side_effect=get)
+
+    intent = _intent(market_type=MarketType.SPOT, size=Decimal("0.001"))
+    adapter = PaperExecutionAdapter(redis=redis)
+    resp = await adapter.submit(_request(intent), "coid-spot-futures-fallback")
+
+    assert resp.success is True
+    assert resp.fill_price == Decimal("63500.00")
+
+
+@pytest.mark.asyncio
+async def test_paper_adapter_uses_spot_price_before_futures_fallback():
+    """Spot intent uses spot keys when available; futures fallback is NOT used."""
+    from shared.redis.keys import RedisKeys as RK
+
+    spot_analytics = RK.analytics_snapshot("spot", "BTCUSDT")
+    futures_analytics = RK.analytics_snapshot("futures", "BTCUSDT")
+
+    redis = AsyncMock()
+
+    async def get(key: str):
+        if key == spot_analytics:
+            return _analytics_payload(62000.0)
+        if key == futures_analytics:
+            return _analytics_payload(63500.0)
+        return None
+
+    redis.get = AsyncMock(side_effect=get)
+
+    intent = _intent(market_type=MarketType.SPOT, size=Decimal("0.001"))
+    adapter = PaperExecutionAdapter(redis=redis)
+    resp = await adapter.submit(_request(intent), "coid-spot-direct")
+
+    assert resp.success is True
+    assert resp.fill_price == Decimal("62000.00")  # spot wins, not futures fallback
+
+
+@pytest.mark.asyncio
+async def test_request_paper_trade_uses_futures_fallback_when_spot_empty():
+    """size_usd paper trade for a spot strategy falls back to futures analytics for price."""
+    from services.mcp_server.facades.execution import request_paper_trade
+    from shared.redis.keys import RedisKeys as RK
+    from unittest.mock import patch
+
+    strategy_id = str(uuid.uuid4())
+    strategy_mock = MagicMock()
+    strategy_mock.state = "paper_active"
+    strategy_mock.market_type = "spot"
+    strategy_mock.current_version = 1
+
+    futures_analytics = RK.analytics_snapshot("futures", "BTCUSDT")
+
+    async def get(key: str):
+        if key == futures_analytics:
+            return _analytics_payload(64000.0)
+        return None  # all spot keys absent
+
+    redis = AsyncMock()
+    redis.get = AsyncMock(side_effect=get)
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.get = AsyncMock(return_value=strategy_mock)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    session_factory = MagicMock(return_value=mock_session)
+
+    with patch("services.mcp_server.facades.execution.stream_publish", new_callable=AsyncMock):
+        result = await request_paper_trade(
+            session_factory=session_factory,
+            redis=redis,
+            strategy_id=strategy_id,
+            symbol="BTCUSDT",
+            side="BUY",
+            size_usd=64.0,  # should derive size = 64 / 64000 = 0.001
+        )
+
+    assert result.get("status") == "queued"
+    assert result.get("size") == "0.00100"  # 64 / 64000 = 0.001

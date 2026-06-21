@@ -46,7 +46,7 @@ class ExecutionConsumer:
         self._settings = settings or ExecutionSettings()
         self._redis = redis or get_redis_client()
         self._repository = repository
-        self._adapter = adapter or PaperExecutionAdapter()
+        self._adapter = adapter or PaperExecutionAdapter(redis=self._redis)
         self._risk_engine = risk_engine or ExecutionRiskEngine(self._redis)
         self._context_loader = context_loader
         self._incident_logger = incident_logger
@@ -221,27 +221,8 @@ class ExecutionConsumer:
 
         if not response.success:
             error_msg = response.error or "unknown"
-            if self._incident_logger and "paper_price_unavailable" in error_msg:
-                try:
-                    await self._incident_logger.log_incident(
-                        incident_type="paper_price_unavailable",
-                        description=f"Paper adapter rejected: {error_msg}",
-                        severity="error",
-                        job_id=job_id,
-                        strategy_id=intent.strategy_id,
-                        context={
-                            "symbol": intent.symbol,
-                            "market_type": intent.market_type.value,
-                            "side": intent.side.value,
-                            "size": str(intent.size),
-                            "size_usd": str(intent.size_usd) if intent.size_usd else None,
-                            "account_id": account_id,
-                            "client_order_id": client_order_id,
-                        },
-                    )
-                except Exception as exc:
-                    log.error("incident log failed", exc_info=exc)
-            await self._on_failed(job_id, client_order_id, "adapter_rejected", error_msg)
+            await self._on_failed(job_id, client_order_id, "adapter_rejected", error_msg,
+                                  intent=intent, account_id=account_id)
             await self._ack(msg_id)
             return
 
@@ -327,6 +308,8 @@ class ExecutionConsumer:
         client_order_id: str,
         reason: str,
         error: str,
+        intent=None,
+        account_id: str = "",
     ) -> None:
         if self._repository:
             try:
@@ -343,6 +326,34 @@ class ExecutionConsumer:
             "error": error,
             "client_order_id": client_order_id,
         })
+
+        # Log incident for any execution failure so get_incidents captures them
+        if self._incident_logger and intent is not None:
+            incident_type = (
+                "paper_price_unavailable"
+                if "paper_price_unavailable" in error
+                else "execution_failure"
+            )
+            try:
+                await self._incident_logger.log_incident(
+                    incident_type=incident_type,
+                    description=f"Execution failed ({reason}): {error}",
+                    severity="error",
+                    job_id=job_id,
+                    strategy_id=intent.strategy_id,
+                    context={
+                        "symbol": intent.symbol,
+                        "market_type": intent.market_type.value,
+                        "side": intent.side.value,
+                        "size": str(intent.size),
+                        "size_usd": str(intent.size_usd) if intent.size_usd else None,
+                        "account_id": account_id,
+                        "client_order_id": client_order_id,
+                        "reason": reason,
+                    },
+                )
+            except Exception as exc:
+                log.error("incident log failed", exc_info=exc)
 
     async def _ack(self, msg_id: str) -> None:
         try:

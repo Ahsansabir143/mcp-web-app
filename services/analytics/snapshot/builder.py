@@ -123,6 +123,36 @@ class SnapshotBuilder:
                 if sr:
                     ms.spread = _d(sr.spread)
                     ms.spread_bps = _d(sr.spread_bps)
+        elif state.last_book:
+            # No book_ticker stream: derive top-of-book bid/ask from the order book.
+            # This populates bid/ask/spread in the analytics snapshot even when the
+            # bookTicker WebSocket stream is not configured.
+            bids = state.last_book.get("bids", [])
+            asks = state.last_book.get("asks", [])
+            try:
+                if bids and asks:
+                    best_bid_row = bids[0]
+                    best_ask_row = asks[0]
+                    bid = float(best_bid_row[0] if isinstance(best_bid_row, (list, tuple)) else best_bid_row)
+                    ask = float(best_ask_row[0] if isinstance(best_ask_row, (list, tuple)) else best_ask_row)
+                    bid_qty = float(best_bid_row[1]) if isinstance(best_bid_row, (list, tuple)) and len(best_bid_row) > 1 else None
+                    ask_qty = float(best_ask_row[1]) if isinstance(best_ask_row, (list, tuple)) and len(best_ask_row) > 1 else None
+                    if bid > 0 and ask > 0:
+                        ms.bid = _d(bid)
+                        ms.ask = _d(ask)
+                        if bid_qty is not None:
+                            ms.bid_size = _d(bid_qty)
+                        if ask_qty is not None:
+                            ms.ask_size = _d(ask_qty)
+                        sr = compute_spread(
+                            str(bid), str(ask),
+                            str(bid_qty or 0), str(ask_qty or 0),
+                        )
+                        if sr:
+                            ms.spread = _d(sr.spread)
+                            ms.spread_bps = _d(sr.spread_bps)
+            except (ValueError, TypeError, IndexError):
+                pass
         return ms
 
     def _build_book_state(self, state: SymbolState, now_ms: int) -> BookState:

@@ -387,8 +387,18 @@ class AccountStreamListener:
         cache_key = RedisKeys.account_stream_status(self._account_id_str)
         await self._redis.set(cache_key, json.dumps({
             "status": "connected",
+            "updated_at_ms": now_ms,
             "last_event_ms": now_ms,
         }), ex=120)
+
+    # TTL per status — non-event statuses use longer TTLs since they aren't refreshed by events
+    _STATUS_REDIS_TTL: dict[str, int] = {
+        "connecting": 300,
+        "connected": 120,
+        "reconnecting": 300,
+        "auth_error": 3600,
+        "stopped": 3600,
+    }
 
     async def _set_status(self, status: str, error: str | None = None) -> None:
         try:
@@ -403,6 +413,17 @@ class AccountStreamListener:
                     await session.commit()
         except Exception as exc:
             log.warning("stream status update failed", exc_info=exc)
+        # Write all status transitions to Redis so MCP can observe non-event states
+        try:
+            now_ms = int(time.time() * 1000)
+            cache_key = RedisKeys.account_stream_status(self._account_id_str)
+            payload: dict = {"status": status, "updated_at_ms": now_ms}
+            if error:
+                payload["error"] = error[:512]
+            ttl = self._STATUS_REDIS_TTL.get(status, 300)
+            await self._redis.set(cache_key, json.dumps(payload), ex=ttl)
+        except Exception as exc:
+            log.warning("stream status Redis write failed", exc_info=exc)
 
     # ── Futures-only: REST listenKey lifecycle ────────────────────────────────
 

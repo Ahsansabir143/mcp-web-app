@@ -65,6 +65,7 @@ _HANDLERS = {
     "get_open_orders": account_tools.get_open_orders,
     "get_recent_fills": account_tools.get_recent_fills,
     "check_live_trade_policy": account_tools.check_live_trade_policy,
+    "get_stream_health": account_tools.get_stream_health,
 }
 
 

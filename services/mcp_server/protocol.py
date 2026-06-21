@@ -102,8 +102,9 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_incidents",
         "description": (
-            "List recent execution incidents (orphan fills, stale orders, reconciliation "
-            "mismatches). Filterable by symbol and start timestamp."
+            "List recent execution incidents. Captures price unavailability errors, "
+            "adapter failures, stream auth errors, and other execution anomalies. "
+            "Filterable by symbol and start timestamp."
         ),
         "inputSchema": {
             "type": "object",
@@ -244,7 +245,8 @@ TOOL_DEFINITIONS = [
         "name": "get_account_connection_status",
         "description": (
             "Get the live exchange connection and WebSocket stream health for an account. "
-            "Returns connection_status, stream_status, stream age, and last event timestamp. "
+            "Returns connection_status, stream_status, stream age, last event timestamp, "
+            "stale flag (true if no event in 120 s), and source_of_truth (redis_live / db_fallback). "
             "Useful for diagnosing why live account data may be stale or unavailable."
         ),
         "inputSchema": {
@@ -339,6 +341,20 @@ TOOL_DEFINITIONS = [
                     "description": "Max fills to return (1–100). Default: 20",
                 },
             },
+        },
+    },
+    {
+        "name": "get_stream_health",
+        "description": (
+            "Report health of all active account WebSocket streams and internal Redis streams. "
+            "Shows per-account stream status, age, and healthy flag; "
+            "plus length and consumer-group lag for each internal stream "
+            "(strategy:intents, execution:events, binance:raw, etc.). "
+            "Use this to diagnose data pipeline issues or confirm streams are live."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
         },
     },
     {

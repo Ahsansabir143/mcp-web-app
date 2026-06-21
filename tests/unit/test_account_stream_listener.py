@@ -505,3 +505,57 @@ async def test_events_with_id_field_are_skipped():
     assert listener._handle_event.call_count == 1
     handled_payload = listener._handle_event.call_args.args[0]
     assert handled_payload.get("e") == "outboundAccountPosition"
+
+
+# ── _set_status Redis write ───────────────────────────────────────────────────
+
+
+async def test_set_status_writes_all_transitions_to_redis():
+    """_set_status must write status + updated_at_ms to Redis for every transition."""
+    listener, _, redis = _make_listener()
+    # DB returns None → the DB update is a no-op; only the Redis path executes
+    statuses_seen = []
+
+    for status in ("connecting", "connected", "reconnecting", "auth_error", "stopped"):
+        redis.set.reset_mock()
+        await listener._set_status(status)
+
+        redis.set.assert_awaited_once()
+        call_kwargs = redis.set.call_args
+        # Positional args: key, value; keyword arg: ex=TTL
+        key = call_kwargs[0][0]
+        payload = json.loads(call_kwargs[0][1])
+        assert payload["status"] == status
+        assert "updated_at_ms" in payload
+        assert isinstance(payload["updated_at_ms"], int)
+        statuses_seen.append(status)
+
+    assert len(statuses_seen) == 5
+
+
+async def test_set_status_includes_error_in_redis_payload():
+    """Error string must appear in Redis payload when status is auth_error."""
+    listener, _, redis = _make_listener()
+
+    await listener._set_status("auth_error", error="subscribe 401: bad key")
+
+    call_args = redis.set.call_args
+    payload = json.loads(call_args[0][1])
+    assert payload["status"] == "auth_error"
+    assert "error" in payload
+    assert "401" in payload["error"]
+
+
+async def test_mark_event_writes_updated_at_ms_and_last_event_ms():
+    """_mark_event Redis payload must include both updated_at_ms and last_event_ms."""
+    listener, _, redis = _make_listener()
+
+    await listener._mark_event()
+
+    redis.set.assert_awaited_once()
+    call_args = redis.set.call_args
+    payload = json.loads(call_args[0][1])
+    assert payload["status"] == "connected"
+    assert "updated_at_ms" in payload
+    assert "last_event_ms" in payload
+    assert payload["updated_at_ms"] == payload["last_event_ms"]

@@ -94,6 +94,7 @@ def test_tools_list_has_all_tools():
         "get_open_orders",
         "get_recent_fills",
         "check_live_trade_policy",
+        "get_stream_health",
     }
     assert expected == names
 
