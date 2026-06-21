@@ -1,20 +1,42 @@
-"""Admin script: interactively encrypt and store Binance API credentials.
+"""Admin script: encrypt and store Binance API credentials into the DB credential store.
 
-Prompts for API key and secret via hidden input (getpass) — they are never
-logged, echoed, or stored as plaintext.
+TWO INPUT MODES — choose whichever works on your platform:
 
-Usage (recommended — Railway injects CREDENTIAL_ENCRYPTION_KEY automatically):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MODE 1 — --from-env  (recommended on Windows, reliable everywhere)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Set BINANCE_API_KEY and BINANCE_API_SECRET in your LOCAL PowerShell
+session using Read-Host -AsSecureString (hidden input), then pass
+--from-env so the script reads them without any getpass call.
 
-    # In your local terminal, set the public DB URL once:
+    # In PowerShell (hidden input — cursor stays still):
+    $k = Read-Host -AsSecureString "Binance API Key"
+    $s = Read-Host -AsSecureString "Binance API Secret"
+    $env:BINANCE_API_KEY    = [System.Net.NetworkCredential]::new("",$k).Password
+    $env:BINANCE_API_SECRET = [System.Net.NetworkCredential]::new("",$s).Password
+
+    # Set public DB URL (needed because railway.internal isn't reachable locally):
     $env:DATABASE_PUBLIC_URL = "postgresql+asyncpg://...@yamanote.proxy.rlwy.net:15859/railway"
 
-    # Then run via railway run so CREDENTIAL_ENCRYPTION_KEY is injected:
-    railway run --service execution python scripts/store_credentials.py \\
+    # Run (railway run injects CREDENTIAL_ENCRYPTION_KEY automatically):
+    railway run --service execution python scripts/store_credentials.py `
+        --account-id 00000000-0000-0000-0000-000000000003 --from-env --verify
+
+    # Clear secrets from session immediately after:
+    Remove-Item Env:BINANCE_API_KEY; Remove-Item Env:BINANCE_API_SECRET
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MODE 2 — interactive getpass  (default, works on Linux/macOS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    $env:DATABASE_PUBLIC_URL = "postgresql+asyncpg://...@proxy/railway"
+    railway run --service execution python scripts/store_credentials.py `
         --account-id 00000000-0000-0000-0000-000000000003 --verify
 
-Environment variables (in priority order):
-    DATABASE_PUBLIC_URL         asyncpg URL to public Postgres TCP proxy (for local runs)
-    DATABASE_URL                asyncpg URL; used if DATABASE_PUBLIC_URL not set
+Environment variables consumed:
+    BINANCE_API_KEY             source credential (--from-env mode only)
+    BINANCE_API_SECRET          source credential (--from-env mode only)
+    DATABASE_PUBLIC_URL         asyncpg URL to public Postgres TCP proxy
+    DATABASE_URL                fallback if DATABASE_PUBLIC_URL not set
     CREDENTIAL_ENCRYPTION_KEY   base64url-encoded 32-byte AES key (injected by railway run)
 
 Exit codes:
@@ -123,6 +145,19 @@ async def _do_store(
         await engine.dispose()
 
 
+def _read_credentials_from_env() -> tuple[str, str] | None:
+    """Read BINANCE_API_KEY / BINANCE_API_SECRET from the process environment.
+
+    Returns (api_key, api_secret) if both are non-empty, otherwise None.
+    Never prints or logs the values.
+    """
+    key = os.environ.get("BINANCE_API_KEY", "").strip()
+    secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+    if not key or not secret:
+        return None
+    return key, secret
+
+
 def _resolve_db_url() -> str:
     """Pick the best available database URL for local execution.
 
@@ -159,6 +194,18 @@ async def main() -> int:
             "Override database URL (asyncpg). "
             "Defaults to DATABASE_PUBLIC_URL or DATABASE_URL env var. "
             "Use the public TCP proxy URL for local execution."
+        ),
+    )
+    parser.add_argument(
+        "--from-env",
+        action="store_true",
+        default=False,
+        help=(
+            "Read credentials from BINANCE_API_KEY and BINANCE_API_SECRET env vars "
+            "instead of getpass. Reliable on Windows where getpass through "
+            "railway run may capture only 1 char. "
+            "Set the env vars in your PowerShell session with Read-Host -AsSecureString "
+            "before running this script, then clear them immediately after."
         ),
     )
     parser.add_argument(
@@ -215,23 +262,46 @@ async def main() -> int:
         )
         return 1
 
-    # ── Prompt for credentials (hidden input) ─────────────────────────────────
-    print(
-        "\n"
-        "Enter your Binance API credentials below.\n"
-        "Input is hidden and will NOT be logged or echoed.\n"
-        "(These should be READ-ONLY keys with no trading permissions.)\n"
-    )
-    try:
-        api_key = getpass.getpass("  Binance API Key    : ")
-        api_secret = getpass.getpass("  Binance API Secret : ")
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.", file=sys.stderr)
-        return 1
+    # ── Acquire credentials ───────────────────────────────────────────────────
+    if args.from_env:
+        # Mode 1: read from environment variables (reliable on Windows)
+        creds = _read_credentials_from_env()
+        if creds is None:
+            print(
+                "ERROR: --from-env requires both BINANCE_API_KEY and "
+                "BINANCE_API_SECRET to be set as non-empty env vars.\n"
+                "Set them in your PowerShell session first:\n"
+                "  $k = Read-Host -AsSecureString 'Binance API Key'\n"
+                "  $env:BINANCE_API_KEY = "
+                "[System.Net.NetworkCredential]::new('',$k).Password",
+                file=sys.stderr,
+            )
+            return 1
+        api_key, api_secret = creds
+        print(
+            f"Reading credentials from env  "
+            f"(key: {len(api_key)} chars, secret: {len(api_secret)} chars)"
+        )
+    else:
+        # Mode 2: interactive getpass (works on Linux/macOS; may fail on Windows
+        # when launched as a subprocess via railway run)
+        print(
+            "\n"
+            "Enter your Binance API credentials below.\n"
+            "Input is hidden and will NOT be logged or echoed.\n"
+            "(These should be READ-ONLY keys with no trading permissions.)\n"
+            "NOTE: If key/secret lengths show as 1 char on Windows, use --from-env instead.\n"
+        )
+        try:
+            api_key = getpass.getpass("  Binance API Key    : ")
+            api_secret = getpass.getpass("  Binance API Secret : ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.", file=sys.stderr)
+            return 1
 
-    if not api_key or not api_secret:
-        print("ERROR: API key and secret must not be empty.", file=sys.stderr)
-        return 1
+        if not api_key or not api_secret:
+            print("ERROR: API key and secret must not be empty.", file=sys.stderr)
+            return 1
 
     print("\nEncrypting and storing credentials …\n")
 

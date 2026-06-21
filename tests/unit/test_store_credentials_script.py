@@ -1,6 +1,6 @@
 """Tests for scripts/store_credentials.py — the credential import admin script.
 
-These tests cover the _do_store() core and _resolve_db_url() helper.
+These tests cover _do_store(), _resolve_db_url(), and _read_credentials_from_env().
 No real database or real secrets are used; CredentialStore is mocked.
 """
 from __future__ import annotations
@@ -394,3 +394,147 @@ async def test_failure_message_never_contains_api_key():
     assert success is False
     assert api_key not in msg
     assert api_secret not in msg
+
+
+# ── _read_credentials_from_env ────────────────────────────────────────────────
+
+def test_read_credentials_from_env_returns_tuple_when_both_set(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.setenv("BINANCE_API_KEY", "MYKEY123")
+    monkeypatch.setenv("BINANCE_API_SECRET", "MYSECRET456")
+    result = _read_credentials_from_env()
+    assert result is not None
+    assert result[0] == "MYKEY123"
+    assert result[1] == "MYSECRET456"
+
+
+def test_read_credentials_from_env_strips_whitespace(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.setenv("BINANCE_API_KEY", "  KEY  ")
+    monkeypatch.setenv("BINANCE_API_SECRET", "  SECRET  ")
+    result = _read_credentials_from_env()
+    assert result is not None
+    assert result[0] == "KEY"
+    assert result[1] == "SECRET"
+
+
+def test_read_credentials_from_env_returns_none_when_key_missing(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.setenv("BINANCE_API_SECRET", "SECRET")
+    assert _read_credentials_from_env() is None
+
+
+def test_read_credentials_from_env_returns_none_when_secret_missing(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.setenv("BINANCE_API_KEY", "KEY")
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    assert _read_credentials_from_env() is None
+
+
+def test_read_credentials_from_env_returns_none_when_key_empty(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.setenv("BINANCE_API_KEY", "")
+    monkeypatch.setenv("BINANCE_API_SECRET", "SECRET")
+    assert _read_credentials_from_env() is None
+
+
+def test_read_credentials_from_env_returns_none_when_secret_empty(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.setenv("BINANCE_API_KEY", "KEY")
+    monkeypatch.setenv("BINANCE_API_SECRET", "")
+    assert _read_credentials_from_env() is None
+
+
+def test_read_credentials_from_env_returns_none_when_both_missing(monkeypatch):
+    from scripts.store_credentials import _read_credentials_from_env
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    assert _read_credentials_from_env() is None
+
+
+# ── --from-env end-to-end through main() ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_from_env_mode_stores_credentials_from_env(monkeypatch):
+    """main() with --from-env reads credentials from env and calls _do_store."""
+    import sys
+    from scripts.store_credentials import main
+
+    api_key = "ENVKEY_" + "A" * 57   # 64 chars total
+    api_secret = "ENVSECRET_" + "B" * 54
+
+    monkeypatch.setenv("BINANCE_API_KEY", api_key)
+    monkeypatch.setenv("BINANCE_API_SECRET", api_secret)
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", generate_key_b64())
+    monkeypatch.setenv(
+        "DATABASE_PUBLIC_URL",
+        "postgresql+asyncpg://a:b@host/db",
+    )
+
+    mock_engine = AsyncMock()
+    mock_engine.dispose = AsyncMock()
+    fake_session = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    mock_acct = MagicMock()
+    mock_acct.account_label = "test"
+    mock_acct.venue = "binance"
+    mock_acct.trading_mode = "paper"
+    fake_session.get = AsyncMock(return_value=mock_acct)
+    factory = MagicMock(return_value=fake_session)
+
+    # store.get() must return the same values for verify to pass
+    good_store = MagicMock()
+    good_store.is_configured = MagicMock(return_value=True)
+    good_store.save = AsyncMock()
+    good_store.get = AsyncMock(return_value=(api_key, api_secret))
+
+    saved_args: list = []
+
+    async def capture_store(acct_id, k, s):
+        saved_args.extend([acct_id, k, s])
+
+    good_store.save = AsyncMock(side_effect=capture_store)
+
+    with (
+        patch.object(sys, "argv", [
+            "store_credentials.py",
+            "--account-id", "00000000-0000-0000-0000-000000000003",
+            "--from-env",
+            "--verify",
+        ]),
+        patch("scripts.store_credentials.create_async_engine", return_value=mock_engine),
+        patch("scripts.store_credentials.async_sessionmaker", return_value=factory),
+        patch("scripts.store_credentials.CredentialStore", return_value=good_store),
+    ):
+        exit_code = await main()
+
+    assert exit_code == 0
+    # The credentials passed to store.save() must be the full env-var values
+    assert saved_args[1] == api_key
+    assert saved_args[2] == api_secret
+
+
+@pytest.mark.asyncio
+async def test_from_env_mode_fails_when_env_vars_missing(monkeypatch):
+    """main() --from-env exits 1 when BINANCE_API_KEY/SECRET are absent."""
+    import sys
+    from scripts.store_credentials import main
+
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", generate_key_b64())
+    monkeypatch.setenv(
+        "DATABASE_PUBLIC_URL",
+        "postgresql+asyncpg://a:b@host/db",
+    )
+
+    with patch.object(sys, "argv", [
+        "store_credentials.py",
+        "--account-id", "00000000-0000-0000-0000-000000000003",
+        "--from-env",
+    ]):
+        exit_code = await main()
+
+    assert exit_code == 1
