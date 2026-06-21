@@ -15,6 +15,12 @@ COPY services/mcp_server/ ./services/mcp_server/
 # strategy_service is lazy-imported at runtime by facades/strategy.py
 COPY services/strategy_service/ ./services/strategy_service/
 
+# execution config + live policy needed by tools/account.py (check_live_trade_policy)
+COPY services/execution/__init__.py ./services/execution/__init__.py
+COPY services/execution/config.py ./services/execution/config.py
+COPY services/execution/adapter/__init__.py ./services/execution/adapter/__init__.py
+COPY services/execution/adapter/live_policy.py ./services/execution/adapter/live_policy.py
+
 ENV PYTHONPATH=/app
 EXPOSE 8006
 
